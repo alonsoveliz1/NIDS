@@ -1,10 +1,10 @@
-
 #ifndef NIDS_BACKEND_H
 #define NIDS_BACKEND_H
 
 #include <stdbool.h>
 typedef struct{
   char* interface_name;
+  int bufsize;
 } nids_config_t;
 
 typedef struct{

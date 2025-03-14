@@ -1,3 +1,6 @@
 {
-  "interface": "eth0"
+  "interface": "eth0",
+  "bufsize": 65535
 }
+
+
