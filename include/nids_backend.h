@@ -15,7 +15,14 @@ typedef struct{
   //ISN del flujo para identificarlo
 } flow_key_t;
 
-
+/* Inicializacion del sistema */
 bool init_nids(nids_config_t* config);
+/* Terminacion del sistema */ 
+
+/* Initialization sniffer */
+bool initialize_sniffer(nids_config_t* config);
+/* Terminacion del sniffer */
+
+bool start_sniffer(void);
 
 #endif /*NIDS_BACKEND_H */

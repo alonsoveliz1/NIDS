@@ -48,6 +48,12 @@ int main(int argc, char* argv[]){
   } else {
     printf("Config path is not introducing, using default configuration\n");
   }
+  
+  if(!initialize_sniffer(&config)){
+    printf("Failed to initialize the packet sniffer module\n");
+    return 1;
+  }
+  
   return 0;
 }
 
@@ -65,10 +71,12 @@ static bool load_config(const char* config_path){
 
   if(json_object_object_get_ex(json_config,"interface", &obj)){
     config.interface_name = strdup(json_object_get_string(obj));
+    printf("Interface name %s\n", config.interface_name);
   }
-
+  
   if(json_object_object_get_ex(json_config,"bufsize", &obj)){
     config.bufsize = json_object_get_int(obj);
+    printf("Bufsize %d\n", config.bufsize);
   }
 
   json_object_put(json_config);
