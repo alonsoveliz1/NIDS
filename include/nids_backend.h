@@ -24,5 +24,6 @@ bool initialize_sniffer(nids_config_t* config);
 /* Terminacion del sniffer */
 
 bool start_sniffer(void);
+static void* sniff_thread(void*); // ESTO TENGO QUE MIRARLO (void*)
 
 #endif /*NIDS_BACKEND_H */

@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <getopt.h>
-
+#include <stdlib.h>
 
 static nids_config_t config;
 
@@ -51,6 +51,11 @@ int main(int argc, char* argv[]){
   
   if(!initialize_sniffer(&config)){
     printf("Failed to initialize the packet sniffer module\n");
+    return 1;
+  }
+
+  if(!start_sniffer()){
+    fprintf(stderr, "Failed to start the sniffer thread\n");
     return 1;
   }
   
