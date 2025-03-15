@@ -24,6 +24,6 @@ bool initialize_sniffer(nids_config_t* config);
 /* Terminacion del sniffer */
 
 bool start_sniffer(void);
-static void* sniff_thread(void*); // ESTO TENGO QUE MIRARLO (void*)
+//static void pcap_handler(u_char* user, const struct pcap_pkthdr* h, const u_char* bytes);
 
 #endif /*NIDS_BACKEND_H */
