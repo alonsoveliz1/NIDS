@@ -5,10 +5,14 @@
 #include <string.h>
 #include <getopt.h>
 #include <stdlib.h>
+#include <unistd.h>
+#include <signal.h>
 
 static nids_config_t config;
+static volatile bool running = false;
 
 static bool load_config(const char* config_path);
+static void signal_handler(int sig);
 
 int main(int argc, char* argv[]){
   /* Default configuration values */
@@ -49,16 +53,27 @@ int main(int argc, char* argv[]){
     printf("Config path is not introducing, using default configuration\n");
   }
   
+  signal(SIGINT, signal_handler);
+  signal(SIGTERM, signal_handler);
+  
   if(!initialize_sniffer(&config)){
     printf("Failed to initialize the packet sniffer module\n");
     return 1;
   }
 
+  running = true;
+
   if(!start_sniffer()){
     fprintf(stderr, "Failed to start the sniffer thread\n");
     return 1;
   }
-  
+
+  // Tengo que hacer que pare cuando el usuario haga ctr+c no poner a dormir esto y que pare cuando deje de dormir
+  while(running){
+    sleep(1);
+  } 
+
+
   return 0;
 }
 
@@ -87,4 +102,9 @@ static bool load_config(const char* config_path){
   json_object_put(json_config);
   printf("load_config_func exit\n");
   return true;
+}
+
+static void signal_handler(int sig){
+  printf("\nReceived closing signal: %d. Exiting program gracefully\n", sig);
+  running = false;
 }

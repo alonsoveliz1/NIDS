@@ -2,6 +2,8 @@
 #define NIDS_BACKEND_H
 
 #include <stdbool.h>
+
+
 typedef struct{
   char* interface_name;
   int bufsize;
@@ -24,6 +26,7 @@ bool initialize_sniffer(nids_config_t* config);
 /* Terminacion del sniffer */
 
 bool start_sniffer(void);
+void stop_sniffer(void);
 //static void pcap_handler(u_char* user, const struct pcap_pkthdr* h, const u_char* bytes);
 
 #endif /*NIDS_BACKEND_H */
