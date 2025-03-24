@@ -14,8 +14,14 @@ typedef struct{
   uint32_t dst_ip;
   uint16_t src_port;
   uint16_t dst_port;
+  uint8_t protocol;
   //ISN del flujo para identificarlo
 } flow_key_t;
+
+typedef struct{
+  uint16_t flow_hash;
+  flow_features_t* features;
+}
 
 /* Inicializacion del sistema */
 bool init_nids(nids_config_t* config);
