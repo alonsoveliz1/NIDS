@@ -33,8 +33,11 @@ bool initialize_sniffer(nids_config_t* session_config){
   }
 
   struct bpf_program fp;
-  char filter_exp[] = "ip";
-
+  char filter_exp[] = "tcp";
+  if(pcap_compile(pcap_handle, &fp, filter_exp, 1, PCAP_NETMASK_UNKNOWN) != 0){
+    fprintf(stderr, "Error compiling berkeley-packet-filter expression\n", errbuf);
+    return false;
+  }
   printf("Interface: %s opened\n", config->interface_name);
   return true;
 }

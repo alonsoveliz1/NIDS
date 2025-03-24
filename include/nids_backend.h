@@ -26,10 +26,23 @@ typedef struct{
   uint16_t flow_hash;
 } flow_stats_t;
 
+typedef struct {
+  u_int8_t* data;
+  size_t len;
+  struct timeval timestamp;
+} packet_info_t;
+
+#define PACKET_QUEUE_SIZE 1000
+
 typedef struct{
+  packet_info_t packets[PACKET_QUEUE_SIZE];
   int head;
   int tail;
   int count;
+  pthread_mutex_t mutex;
+  pthread_cond_t not_empty;
+  pthread_cond_t not_full;
+  bool shutdown;
 } packet_queue_t;
 
 /* Inicializacion del sistema */
