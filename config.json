@@ -1,6 +1,8 @@
 {
   "interface": "enp4s0",
-  "bufsize": 65535
+  "bufsize": 65535,
+  "flow_table_init_size": 10000
+  
 }
 
 

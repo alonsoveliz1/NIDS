@@ -8,17 +8,24 @@
 #include <unistd.h>
 #include <signal.h>
 
-static nids_config_t config;
+nids_config_t* config = NULL;
 static volatile bool running = false;
 
 static bool load_config(const char* config_path);
 static void signal_handler(int sig);
-
+static void clean_all_processes(void);
 int main(int argc, char* argv[]){
+
+  config = malloc(sizeof(nids_config_t));
+  if(config == NULL){
+    fprintf(stderr, "Failed to allocate memory for config\n");
+    return 1;
+  }
   /* Default configuration values */
-  config.interface_name = "eth0";
-  config.bufsize = 65535; // MAX VALUE FOR TCP PACKETS
-  
+  config->interface_name = "eth0";
+  config->bufsize = 65535; // MAX VALUE FOR TCP PACKETS
+  config->flow_table_init_size = 10000;
+
   int options;
   char* config_path = NULL;
 
@@ -32,7 +39,7 @@ int main(int argc, char* argv[]){
   while((options = getopt_long(argc, argv, "i:m:c:vh", long_options, NULL)) !=-1){
     switch(options){
       case 'i':
-        config.interface_name = optarg;
+        config->interface_name = optarg;
         break;
       case 'c':
         config_path = optarg;
@@ -52,12 +59,18 @@ int main(int argc, char* argv[]){
   } else {
     printf("Config path is not introducing, using default configuration\n");
   }
-  
+  printf("My PID is: %d\n", getpid());
+
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
   
-  if(!initialize_sniffer(&config)){
+  if(!initialize_sniffer(config)){
     printf("Failed to initialize the packet sniffer module\n");
+    return 1;
+  }
+  
+  if(!initialize_feature_extractor(config)){
+    printf("Failed to initialize the flow feature extractor module\n");
     return 1;
   }
 
@@ -72,7 +85,8 @@ int main(int argc, char* argv[]){
   while(running){
     sleep(1);
   } 
-
+  printf("MAIN: Shutting down the program...\n");
+  clean_all_processes();
 
   return 0;
 }
@@ -90,13 +104,18 @@ static bool load_config(const char* config_path){
   struct json_object* obj;
 
   if(json_object_object_get_ex(json_config,"interface", &obj)){
-    config.interface_name = strdup(json_object_get_string(obj));
-    printf("Interface name %s\n", config.interface_name);
+    config->interface_name = strdup(json_object_get_string(obj));
+    printf("Interface name %s\n", config->interface_name);
   }
   
   if(json_object_object_get_ex(json_config,"bufsize", &obj)){
-    config.bufsize = json_object_get_int(obj);
-    printf("Bufsize %d\n", config.bufsize);
+    config->bufsize = json_object_get_int(obj);
+    printf("Bufsize %d\n", config->bufsize);
+  }
+
+  if(json_object_object_get_ex(json_config,"flow_table_init_size", &obj)){
+    config->flow_table_init_size = json_object_get_int(obj);
+    printf("Flow table init size %d\n", config->flow_table_init_size);
   }
 
   json_object_put(json_config);
@@ -105,6 +124,20 @@ static bool load_config(const char* config_path){
 }
 
 static void signal_handler(int sig){
-  printf("\nReceived closing signal: %d. Exiting program gracefully\n", sig);
+  printf("\nMAIN: Received closing signal: %d. Exiting program gracefully\n", sig);
   running = false;
+}
+
+static void clean_all_processes(){
+  running = false;
+  printf("MAIN: clean_all_processes method\n");
+  if(config != NULL){
+    free(config->interface_name);
+    free(config);
+    config = NULL;
+  }
+  stop_sniffer();
+  //stop_model();
+  //stop_flow_updating_process();
+  //frontend 
 }
