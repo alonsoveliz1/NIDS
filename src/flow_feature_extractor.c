@@ -55,16 +55,38 @@ int get_flow_hash(const u_char* pkt_data){
   return 1;
 }
 
+void stop_flow_manager(void){
+  if(!running){
+    fprintf(stderr, "Flow manager aint running");
+  }
+
+  running = false;
+  pthread_cancel(flow_manager_thread);
+  printf("FLOW_MANAGER_THREAD: Stopped the flow_manager_thread");
+}
+
+
 void* flow_manager_thread_func(void* arg){
+  packet_info_t packet;
+
   printf("THREAD_FEATURE_EXTRACTOR: Inside flow_manager_thread_func\n");
 
   if(pthread_detach(pthread_self()) != 0){
     fprintf(stderr, "THREAD_FEATURE_EXTRACOTR: Wasnt detached successfully\n");
   }
-  pthread_setname_np(pthread_self(), "flow_mngr");
+
+  pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+  pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+  pthread_setname_np(pthread_self(), "flow_mngr_thread");
   
   while(running){
-    sleep(1);
+    if(dequeue_packet(&packet)){
+      process_packet(packet.data, packet.len);
+    }
   }
   return NULL;
+}
+
+void process_packet(u_int8_t* data, size_t len){
+  printf("Protocol %u \n", data[8]);
 }
