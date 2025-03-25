@@ -27,6 +27,7 @@ bool init_packet_queue(void){
     fprintf(stderr, "Failed to initialize not_full condition\n");
     pthread_cond_destroy(&packet_queue.not_empty);
     pthread_mutex_destroy(&packet_queue.mutex);
+    return false;
   }
   return true;
 }
@@ -37,6 +38,11 @@ bool clean_packet_queue(void){
 
 bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp){
   pthread_mutex_lock(&packet_queue.mutex);
+  
+  // ME TENGO QUE ESPERAR A QUE NO ESTÉ LLENO SI QUIERO ENCOLAR
+  while(packet_queue.count >= PACKET_QUEUE_SIZE){
+    pthread_cond_wait(&packet_queue.not_full, &packet_queue.mutex);
+  }
 
   packet_queue.packets[packet_queue.head].data = (uint8_t*)malloc(len);
   if(packet_queue.packets[packet_queue.head].data == NULL){
@@ -50,11 +56,33 @@ bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp
   
   packet_queue.head = (packet_queue.head + 1);
   packet_queue.count++;
+  printf("Packet_queue length %d", packet_queue.head);
 
   // We tell the flow manager that there are packets to process
   pthread_cond_signal(&packet_queue.not_empty);
   pthread_mutex_unlock(&packet_queue.mutex);
 
+  return true;
+}
+
+bool dequeue_packet(packet_info_t* packet){
+  pthread_mutex_lock(&packet_queue.mutex);
+  
+  while(packet_queue.count <= 0){
+    pthread_cond_wait(&packet_queue.not_empty, &packet_queue.mutex);
+  }
+
+  packet->data = packet_queue.packets[packet_queue.tail].data;
+  packet->len = packet_queue.packets[packet_queue.tail].len;
+  packet->timestamp = packet_queue.packets[packet_queue.tail].timestamp;
+
+  packet_queue.packets[packet_queue.tail].data = NULL;
+  packet_queue.tail++;
+  packet_queue.count--;
+
+  pthread_cond_signal(&packet_queue.not_full);
+
+  pthread_mutex_unlock(&packet_queue.mutex); 
   return true;
 }
 
