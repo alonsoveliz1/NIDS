@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
+
 typedef struct{
   char* interface_name;
   int bufsize;
@@ -32,7 +33,7 @@ typedef struct {
   struct timeval timestamp;
 } packet_info_t;
 
-#define PACKET_QUEUE_SIZE 1000
+#define PACKET_QUEUE_SIZE 10000
 
 typedef struct{
   packet_info_t packets[PACKET_QUEUE_SIZE];
