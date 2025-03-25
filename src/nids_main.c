@@ -81,10 +81,16 @@ int main(int argc, char* argv[]){
     return 1;
   }
 
+  if(!start_flow_manager()){
+    fprintf(stderr, "Failed to start the feature manager thread\n");
+    return 1;
+  }
+
   // Tengo que hacer que pare cuando el usuario haga ctr+c no poner a dormir esto y que pare cuando deje de dormir
   while(running){
     sleep(1);
-  } 
+  }
+
   printf("MAIN: Shutting down the program...\n");
   clean_all_processes();
 
