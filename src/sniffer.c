@@ -5,6 +5,7 @@
 #include "nids_backend.h"
 #include <pthread.h>
 
+
 pcap_t* pcap_handle = NULL;
 //nids_config_t* config = NULL;
 static pthread_t sniffer_thread;
@@ -34,8 +35,14 @@ bool initialize_sniffer(nids_config_t* session_config){
 
   struct bpf_program fp;
   char filter_exp[] = "tcp";
+
   if(pcap_compile(pcap_handle, &fp, filter_exp, 1, PCAP_NETMASK_UNKNOWN) != 0){
-    fprintf(stderr, "Error compiling berkeley-packet-filter expression\n", errbuf);
+    fprintf(stderr,"Error compiling berkeley-packet-filter expression\n");
+    return false;
+  }
+
+  if(pcap_setfilter(pcap_handle, &fp) == -1){
+    fprintf(stderr, "Error setting up the filter %s", filter_exp);
     return false;
   }
   printf("Interface: %s opened\n", config->interface_name);
@@ -107,10 +114,10 @@ static void* sniff_thread_func(void* arg){
 // CALLBACK FUNCTION THAT IS PROCESSED AFTER EACH RECEIVED PACKET IN PCAP_LOOP
 static void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_char* pkt_data){
   printf("PACKET CAPTURED \n");
-
   if(!enqueue_packet(pkt_data, header->len, header->ts)){
     fprintf(stderr, "Failed to enqueue packet\n");
   }
 }
+
  
 
