@@ -33,6 +33,24 @@ bool init_packet_queue(void){
 }
 
 bool clean_packet_queue(void){
+  pthread_mutex_lock(&packet_queue.mutex);
+
+  while(packet_queue.count > 0){
+    if(packet_queue.packets[packet_queue.tail].data != NULL){
+      free(packet_queue.packets[packet_queue.tail].data);
+      packet_queue.packets[packet_queue.tail].data = NULL;
+    }
+
+    packet_queue.tail = packet_queue.tail - 1;
+    packet_queue.count--;
+  }
+ 
+  pthread_mutex_unlock(&packet_queue.mutex);
+
+  pthread_cond_destroy(&packet_queue.not_full);
+  pthread_cond_destroy(&packet_queue.not_empty);
+  pthread_mutex_destroy(&packet_queue.mutex);
+
   return true;
 }
 
@@ -82,7 +100,10 @@ bool dequeue_packet(packet_info_t* packet){
 
   pthread_cond_signal(&packet_queue.not_full);
 
-  pthread_mutex_unlock(&packet_queue.mutex); 
+  pthread_mutex_unlock(&packet_queue.mutex);
+
   return true;
 }
+
+
 
