@@ -72,9 +72,9 @@ bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp
   packet_queue.packets[packet_queue.head].len = len;
   packet_queue.packets[packet_queue.head].timestamp = timestamp;
   
-  packet_queue.head = (packet_queue.head + 1);
+  packet_queue.head = (packet_queue.head + 1) % PACKET_QUEUE_SIZE; // Me estaba saliendo de la cola y escribiendo fuera
   packet_queue.count++;
-  printf("Packet_queue length %d", packet_queue.head);
+  printf("Packet_queue length %d\n", packet_queue.count);
 
   // We tell the flow manager that there are packets to process
   pthread_cond_signal(&packet_queue.not_empty);
@@ -95,7 +95,7 @@ bool dequeue_packet(packet_info_t* packet){
   packet->timestamp = packet_queue.packets[packet_queue.tail].timestamp;
 
   packet_queue.packets[packet_queue.tail].data = NULL;
-  packet_queue.tail++;
+  packet_queue.tail = (packet_queue.tail + 1) % PACKET_QUEUE_SIZE;
   packet_queue.count--;
 
   pthread_cond_signal(&packet_queue.not_full);
