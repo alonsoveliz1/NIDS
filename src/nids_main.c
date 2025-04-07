@@ -143,7 +143,7 @@ static void clean_all_processes(){
     config = NULL;
   }
   stop_sniffer();
+  stop_flow_manager();
   //stop_model();
-  //stop_flow_updating_process();
   //frontend 
 }
