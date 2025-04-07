@@ -23,17 +23,21 @@ typedef struct{
   //ISN del flujo para identificarlo
 } flow_key_t;
 
+/* Here will go all the features my model needs to class¡fy */
 typedef struct{
-  uint16_t flow_hash;
+  uint32_t flow_hash;
+  u_int32_t packets_processed;
+  u_int32_t bytes_processed;
+
 } flow_stats_t;
 
 typedef struct {
-  u_int8_t* data;
+  uint8_t* data;
   size_t len;
   struct timeval timestamp;
 } packet_info_t;
 
-#define PACKET_QUEUE_SIZE 10000
+#define PACKET_QUEUE_SIZE 10
 
 typedef struct{
   packet_info_t packets[PACKET_QUEUE_SIZE];
@@ -56,10 +60,11 @@ bool initialize_sniffer(nids_config_t* config);
 
 bool start_sniffer(void);
 void stop_sniffer(void);
-//static void pcap_handler(u_char* user, const struct pcap_pkthdr* h, const u_char* bytes);
+//static void pcap_handler(u_char* user, const struct pcap_pkthdsh r* h, const u_char* bytes);
 
 bool initialize_feature_extractor(nids_config_t*);
 
 
 bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp);
+bool dequeue_packet(packet_info_t* packet);
 #endif /*NIDS_BACKEND_H */
