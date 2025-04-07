@@ -41,7 +41,7 @@ bool clean_packet_queue(void){
       packet_queue.packets[packet_queue.tail].data = NULL;
     }
 
-    packet_queue.tail = packet_queue.tail - 1;
+    packet_queue.tail = (packet_queue.tail + 1) % PACKET_QUEUE_SIZE;
     packet_queue.count--;
   }
  
