@@ -16,7 +16,7 @@ typedef struct flow_entry{
   struct flow_entry* next;
 } flow_entry_t;
 
-struct flow_entry_t** flow_table = NULL;
+struct flow_entry** flow_table = NULL;
 static int flow_count = 0;
 static volatile bool running = false;
 
@@ -28,10 +28,10 @@ int flow_hashmap_size;
 void process_packet(uint8_t* data, size_t len);
 void* flow_manager_thread_func(void* arg);
 u_int32_t hash_key(flow_key_t* key);
-flow_stats_t* get_flow(flow_key_t* key);
+flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash);
 flow_key_t* get_flow_key(const u_char* pkt_data, size_t len);
-flow_stats_t* create_flow(flow_key_t* key);
-
+flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash);
+flow_stats_t* update_flow(flow_key_t* key, uint32_t flow_hash);
 
 /* Inicializa el hilo para extraer las caracteristicas de los flujos y asigna espacio en memoria para el hashmap */
 bool initialize_feature_extractor(nids_config_t* session_config){
@@ -76,7 +76,7 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
   if(!flow_key){
     fprintf(stderr, "[get_flow_key] Failed to allocat memory \n");
   }
-  memset(flow_key, 0, sizeof(flow_key));
+  memset(flow_key, 0, sizeof(flow_key_t));
   
   if(len < sizeof(struct ether_header)){
     fprintf(stderr, "[get_flow_key] Packet too short for Ethernet Header\n");
@@ -181,16 +181,23 @@ void process_packet(u_int8_t* data, size_t len){
   if(!key){
     return;
   }
+  u_int32_t flow_hash = hash_key(key);
 
-  flow_stats_t* flow = get_flow(key);
-
+  flow_stats_t* flow = get_flow(key, flow_hash);
   if(!flow){
-    flow_stats_t* created = create_flow(key);
+    flow_stats_t* created = create_flow(key, flow_hash);
     if(!created){
       fprintf(stderr, "[process_packet] Flow couldnt be created\n");
       return;
     }
+  } else{
+    flow_stats_t* updated = update_flow(key, flow_hash);
+    if(!updated){
+      fprintf(stderr, "[process_packet] Flow couldnt be updated\n");
+      return;
+    }
   }
+
   free(key);
   packets_processed = packets_processed + 1;
   printf("[process_packet] Packets processed: %d \n", packets_processed);
@@ -209,20 +216,24 @@ uint32_t hash_key(flow_key_t* key){
 
 }
 
-flow_stats_t* create_flow(flow_key_t* key){
+/* Allocates memory for a new_flow entry, sets flow hash as the key to the flow_table and the flow to the head of its bucket of the linked list */
+flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash){
   pthread_mutex_lock(&flow_mutex);
-  uint32_t flow_hash = hash_key(key);
   
   flow_entry_t* new_entry = (flow_entry_t*)malloc(sizeof(flow_entry_t));
   if(new_entry == NULL){
+    fprintf(stderr, "Failed to allocate memory for new flow entry\n");
     pthread_mutex_unlock(&flow_mutex);
     return NULL;
   }
   
   memset(&new_entry->stats, 0, sizeof(flow_stats_t));
+  memcpy(&new_entry->stats.key, key, sizeof(flow_key_t));
   new_entry->stats.flow_hash = flow_hash;
-  
+   
+  // Apunto al anterior flujo que tenia ese hash
   new_entry->next = flow_table[flow_hash];
+  // Ahora la key del hashmap es el nuevo flujo que encabeza la linked_list
   flow_table[flow_hash] = new_entry;
   
   flow_count++;
@@ -231,8 +242,29 @@ flow_stats_t* create_flow(flow_key_t* key){
   return &new_entry->stats;
 }
 
-/* Por ahora vamos a pensar que ningun flujo esta en el hashmap creado y vamos a crearlo */
-flow_stats_t* get_flow(flow_key_t* key){
+flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash){
+  pthread_mutex_lock(&flow_mutex);
+  
+  flow_entry_t* current_flow = flow_table[flow_hash];
+
+  while(current_flow != NULL){
+    if(current_flow->stats.key.src_ip == key->src_ip &&
+       current_flow->stats.key.dst_ip == key->dst_ip && 
+       current_flow->stats.key.src_port == key->src_port &&
+       current_flow->stats.key.dst_port == key->dst_port &&
+       current_flow->stats.key.protocol == key->protocol)
+    {
+      pthread_mutex_unlock(&flow_mutex);
+      return &current_flow->stats;
+    } else{
+      current_flow = current_flow->next;
+    }
+  }
+  pthread_mutex_unlock(&flow_mutex);
   return NULL;
 }
 
+
+flow_stats_t* update_flow(flow_key_t* key, uint32_t flow_hash){
+  return NULL;
+}
