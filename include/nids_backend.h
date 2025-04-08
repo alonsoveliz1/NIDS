@@ -25,6 +25,7 @@ typedef struct{
 
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
+  flow_key_t key;
   uint32_t flow_hash;
   u_int32_t packets_processed;
   u_int32_t bytes_processed;
