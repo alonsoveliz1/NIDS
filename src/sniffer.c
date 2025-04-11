@@ -29,23 +29,26 @@ bool initialize_sniffer(nids_config_t* session_config){
   */
   pcap_handle = pcap_open_live(config->interface_name,config->bufsize, 1, 1000, errbuf);
   if(pcap_handle == NULL){
-    fprintf(stderr, "Error opening interface %s: %s\n", config->interface_name, errbuf);
+    fprintf(stderr, "(SNIFFER)[initialize_sniffer]: Error opening interface %s: %s\n", config->interface_name, errbuf);
     return false;
   }
+
+  int datalink = pcap_datalink(pcap_handle);
+  printf("(SNIFFER)[initialize_sniffer]: Link-layer header type: %d (%s)\n", datalink, pcap_datalink_val_to_name(datalink));
 
   struct bpf_program fp;
   char filter_exp[] = "tcp";
 
   if(pcap_compile(pcap_handle, &fp, filter_exp, 1, PCAP_NETMASK_UNKNOWN) != 0){
-    fprintf(stderr,"Error compiling berkeley-packet-filter expression\n");
+    fprintf(stderr,"(SNIFFER)[initialize_sniffer]: Error compiling berkeley-packet-filter expression\n");
     return false;
   }
 
   if(pcap_setfilter(pcap_handle, &fp) == -1){
-    fprintf(stderr, "Error setting up the filter %s", filter_exp);
+    fprintf(stderr, "(SNIFFER)[initialize_sniffer]: Error setting up the filter %s\n", filter_exp);
     return false;
   }
-  printf("Interface: %s opened\n", config->interface_name);
+  printf("(SNIFFER)[initialize_sniffer]: Interface: %s opened\n", config->interface_name);
   return true;
 }
 
@@ -53,12 +56,12 @@ bool initialize_sniffer(nids_config_t* session_config){
 
 bool start_sniffer(void){
   if(pcap_handle == NULL){
-    fprintf(stderr, "Can't start the sniffer module cause handler is not instanciated \n");
+    fprintf(stderr, "(SNIFFER)[start_sniffer]: Can't start the sniffer module cause handler is not instanciated\n");
     return false;
   }
 
   if(running){
-    fprintf(stderr, "Packet sniffer is already running! \n");
+    fprintf(stderr, "(SNIFFER)[start_sniffer]: Packet sniffer is already running! \n");
     return false;
   }
 
@@ -66,7 +69,7 @@ bool start_sniffer(void){
 
   // CODE TO START THE SNIFFER THREAD
   if(pthread_create(&sniffer_thread, NULL, &sniff_thread_func, NULL) != 0){
-    fprintf(stderr, "SNIFFER.c: Sniffer thread couldn't be initialised properly\n");
+    fprintf(stderr, "(SNIFFER)[start_sniffer]: Sniffer thread couldn't be initialised properly\n");
     running = false;
     return false;
   }
@@ -90,14 +93,14 @@ void stop_sniffer(void){
     pcap_close(pcap_handle);
     pcap_handle = NULL;
   }
-  printf("SNIFFER: Stopped the sniffer thread\n");
+  printf("(SNIFFER)[stop_sniffer]: Stopped the sniffer thread\n");
 }
 
 static void* sniff_thread_func(void* arg){
-  printf("THREAD_SNIFFER: Inside sniff_thread_func\n");
+  printf("(SNIFFER)[sniff_thread_func]: Inside sniff_thread_func\n");
 
   if(pthread_detach(pthread_self()) != 0){
-    fprintf(stderr,"THREAD_SNIFFER: Wasnt detached succesfully\n");
+    fprintf(stderr,"(SNIFFER)[sniff_thread_func]: Wasnt detached succesfully\n");
   }
 
   pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
@@ -105,7 +108,7 @@ static void* sniff_thread_func(void* arg){
   pthread_setname_np(pthread_self(), "sniff_thread");
   printf("Inside the thread\n");
   /* pcap_loop(pcap_t *p, int cnt, pcap_handler callback, u_char *user) */
-  pcap_loop(pcap_handle, 0 , packet_handler , NULL);
+  pcap_loop(pcap_handle, 0, packet_handler , NULL);
   return NULL;
 
 }
@@ -115,8 +118,9 @@ static void* sniff_thread_func(void* arg){
 static void packet_handler(u_char* param, const struct pcap_pkthdr* header, const u_char* pkt_data){
   printf("PACKET CAPTURED \n");
   if(!enqueue_packet(pkt_data, header->len, header->ts)){
-    fprintf(stderr, "Failed to enqueue packet\n");
+    fprintf(stderr, "(SNIFFER)[packet_handler): Failed to enqueue packet\n");
   }
+  // printf("(SNIFFER)[packet_handler]: Timestamp of packet in ms %ld\n", ((uint64_t)header->ts.tv_sec * 1000000 + header->ts.tv_usec));
 }
 
  
