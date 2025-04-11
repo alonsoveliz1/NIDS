@@ -70,7 +70,7 @@ bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp
 
   memcpy(packet_queue.packets[packet_queue.head].data, pkt_data, len);
   packet_queue.packets[packet_queue.head].len = len;
-  packet_queue.packets[packet_queue.head].timestamp = timestamp;
+  packet_queue.packets[packet_queue.head].time_microseconds = (uint64_t)timestamp.tv_sec * 1000000 + timestamp.tv_usec;
   
   packet_queue.head = (packet_queue.head + 1) % PACKET_QUEUE_SIZE; // Me estaba saliendo de la cola y escribiendo fuera
   packet_queue.count++;
@@ -92,7 +92,7 @@ bool dequeue_packet(packet_info_t* packet){
 
   packet->data = packet_queue.packets[packet_queue.tail].data;
   packet->len = packet_queue.packets[packet_queue.tail].len;
-  packet->timestamp = packet_queue.packets[packet_queue.tail].timestamp;
+  packet->time_microseconds = packet_queue.packets[packet_queue.tail].time_microseconds;
 
   packet_queue.packets[packet_queue.tail].data = NULL;
   packet_queue.tail = (packet_queue.tail + 1) % PACKET_QUEUE_SIZE;
