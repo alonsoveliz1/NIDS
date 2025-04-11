@@ -25,17 +25,129 @@ typedef struct{
 
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
-  flow_key_t key;
-  uint32_t flow_hash;
-  u_int32_t packets_processed;
-  u_int32_t bytes_processed;
-
+    flow_key_t key;
+    uint32_t dst_ip_fwd;
+    uint32_t flow_hash;              // Hash of the flow key
+    
+    // Flow duration
+    uint64_t flow_start_time;        // Start timestamp of the flow
+    uint64_t flow_last_time;         // Last seen timestamp
+    uint64_t flow_duration;          // Duration of the flow in microseconds
+    
+    // Packet counts
+    uint32_t total_fwd_packets;      // Total packets in forward direction
+    uint32_t total_bwd_packets;      // Total packets in backward direction
+    
+    // Size-based features
+    uint64_t total_fwd_bytes;        // Total bytes in forward direction
+    uint64_t total_bwd_bytes;        // Total bytes in backward direction
+   
+    uint16_t fwd_packet_len_min;     // Min packet size in forward direction
+    uint16_t fwd_packet_len_max;     // Max packet size in forward direction
+    double   fwd_packet_len_mean;    // Mean packet size in forward direction
+    double   fwd_packet_len_std;     // Std dev of packet size in forward direction
+    
+    uint16_t bwd_packet_len_min;     // Min packet size in backward direction
+    uint16_t bwd_packet_len_max;     // Max packet size in backward direction
+    double   bwd_packet_len_mean;    // Mean packet size in backward direction
+    double   bwd_packet_len_std;     // Std dev of packet size in backward direction
+    
+    // Flow rate features
+    double   flow_bytes_per_sec;     // Flow bytes per second
+    double   flow_packets_per_sec;   // Flow packets per second
+    
+    // Inter-Arrival Time features
+    double   flow_iat_mean;          // Mean time between packets in the flow
+    double   flow_iat_std;           // Std dev of time between packets
+    uint64_t flow_iat_max;           // Max time between packets
+    uint64_t flow_iat_min;           // Min time between packets
+    
+    uint64_t fwd_iat_min;            // Min time between forward packets
+    uint64_t fwd_iat_max;            // Max time between forward packets
+    double   fwd_iat_mean;           // Mean time between forward packets
+    double   fwd_iat_std;            // Std dev of time between forward packets
+    uint64_t fwd_iat_total;          // Total time between forward packets
+    
+    uint64_t bwd_iat_min;            // Min time between backward packets
+    uint64_t bwd_iat_max;            // Max time between backward packets
+    double   bwd_iat_mean;           // Mean time between backward packets
+    double   bwd_iat_std;            // Std dev of time between backward packets
+    uint64_t bwd_iat_total;          // Total time between backward packets
+    
+    // FWD && BWD Specific flag counts
+    uint16_t fwd_psh_flags;          // Number of PSH flags in forward direction
+    uint16_t bwd_psh_flags;          // Number of PSH flags in backward direction
+    uint16_t fwd_urg_flags;          // Number of URG flags in forward direction
+    uint16_t bwd_urg_flags;          // Number of URG flags in backward direction
+    
+    // Header information
+    uint32_t fwd_header_len;         // Total bytes used for headers in forward direction
+    uint32_t bwd_header_len;         // Total bytes used for headers in backward direction
+    
+    // Packet rate
+    double   fwd_packets_per_sec;    // Forward packets per second
+    double   bwd_packets_per_sec;    // Backward packets per second
+    
+    // Aggregate packet length statistics
+    uint16_t packet_len_min;         // Minimum length of a packet
+    uint16_t packet_len_max;         // Maximum length of a packet
+    double   packet_len_mean;        // Mean length of a packet
+    double   packet_len_std;         // Std dev of packet length
+    double   packet_len_variance;    // Variance of packet length
+    
+    // Flag counts
+    uint16_t fin_flag_count;         // Number of packets with FIN
+    uint16_t syn_flag_count;         // Number of packets with SYN
+    uint16_t rst_flag_count;         // Number of packets with RST
+    uint16_t psh_flag_count;         // Number of packets with PUSH
+    uint16_t ack_flag_count;         // Number of packets with ACK
+    uint16_t urg_flag_count;         // Number of packets with URG
+    uint16_t cwr_flag_count;         // Number of packets with CWR
+    uint16_t ece_flag_count;         // Number of packets with ECE
+    
+    // Ratio and averages
+    double   down_up_ratio;          // Download and upload ratio
+    double   avg_packet_size;        // Average size of packet
+    double   fwd_segment_size_avg;   // Average size in forward direction
+    double   bwd_segment_size_avg;   // Average size in backward direction
+    
+    // Bulk features
+    double   fwd_bytes_bulk_avg;     // Average bytes bulk rate in forward direction
+    double   fwd_packet_bulk_avg;    // Average packet bulk rate in forward direction
+    double   fwd_bulk_rate_avg;      // Average bulk rate in forward direction
+    double   bwd_bytes_bulk_avg;     // Average bytes bulk rate in backward direction
+    double   bwd_packet_bulk_avg;    // Average packet bulk rate in backward direction
+    double   bwd_bulk_rate_avg;      // Average bulk rate in backward direction
+    
+    // Subflow features
+    uint32_t subflow_fwd_packets;    // Average packets in subflow in forward direction
+    uint32_t subflow_fwd_bytes;      // Average bytes in subflow in forward direction
+    uint32_t subflow_bwd_packets;    // Average packets in subflow in backward direction
+    uint32_t subflow_bwd_bytes;      // Average bytes in subflow in backward direction
+    
+    // Window features
+    uint32_t fwd_init_win_bytes;     // Initial window bytes in forward direction
+    uint32_t bwd_init_win_bytes;     // Initial window bytes in backward direction
+    uint32_t fwd_act_data_packets;   // Count of packets with at least 1 byte of TCP data payload
+    uint16_t fwd_seg_size_min;       // Minimum segment size in forward direction
+    
+    // Active/Idle features
+    uint64_t active_min;             // Minimum time flow was active before becoming idle
+    double   active_mean;            // Mean time flow was active before becoming idle
+    uint64_t active_max;             // Maximum time flow was active before becoming idle
+    double   active_std;             // Std dev of time flow was active before becoming idle
+    
+    uint64_t idle_min;               // Minimum time flow was idle before becoming active
+    double   idle_mean;              // Mean time flow was idle before becoming active
+    uint64_t idle_max;               // Maximum time flow was idle before becoming active
+    double   idle_std;               // Std dev of time flow was idle before becoming active 
 } flow_stats_t;
 
 typedef struct {
   uint8_t* data;
   size_t len;
   struct timeval timestamp;
+  uint64_t time_microseconds;
 } packet_info_t;
 
 #define PACKET_QUEUE_SIZE 10
