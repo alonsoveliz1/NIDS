@@ -5,6 +5,7 @@
 #include <time.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 
 typedef struct{
   char* interface_name;
@@ -25,6 +26,10 @@ typedef struct{
 
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
+    bool expired;
+    uint64_t idle_time;              // Time in which i'm not receiving any packets
+    uint64_t time_last_packet_received;
+
     flow_key_t key;
     uint32_t dst_ip_fwd;
     uint32_t flow_hash;              // Hash of the flow key
@@ -61,7 +66,8 @@ typedef struct{
     double   flow_iat_std;           // Std dev of time between packets
     uint64_t flow_iat_max;           // Max time between packets
     uint64_t flow_iat_min;           // Min time between packets
-    
+    uint64_t flow_iat_total;         // For then to compute with packet num
+
     uint64_t fwd_iat_min;            // Min time between forward packets
     uint64_t fwd_iat_max;            // Max time between forward packets
     double   fwd_iat_mean;           // Mean time between forward packets
@@ -110,14 +116,27 @@ typedef struct{
     double   avg_packet_size;        // Average size of packet
     double   fwd_segment_size_avg;   // Average size in forward direction
     double   bwd_segment_size_avg;   // Average size in backward direction
-    
+    double fwd_segment_size_tot;
+    double bwd_segment_size_tot;
+    double fwd_seg_size_min;       // Minimum segment size in forward direction
+
     // Bulk features
-    double   fwd_bytes_bulk_avg;     // Average bytes bulk rate in forward direction
-    double   fwd_packet_bulk_avg;    // Average packet bulk rate in forward direction
-    double   fwd_bulk_rate_avg;      // Average bulk rate in forward direction
-    double   bwd_bytes_bulk_avg;     // Average bytes bulk rate in backward direction
-    double   bwd_packet_bulk_avg;    // Average packet bulk rate in backward direction
-    double   bwd_bulk_rate_avg;      // Average bulk rate in backward direction
+    bool last_packet_is_bulk;
+    int num_fwd_bulk_transmissions;
+    time_t fwd_bulk_start;
+    time_t fwd_bulk_end;
+    time_t fwd_bulk_duration;
+    double fwd_bytes_bulk_tot;     // Total of bytes transmitted in bulk in the forward direction
+    double fwd_packet_bulk_tot;    // Total of packet transmitted in bulk in the forward direction
+    double fwd_bytes_bulk_avg;     // Average bytes bulk rate in forward direction
+    double fwd_packet_bulk_avg;    // Average packet bulk rate in forward direction
+    double fwd_bulk_rate_avg;      // Average bulk rate in forward direction
+
+    double bwd_bytes_bulk_tot;
+    double bwd_packet_bulk_tot;
+    double bwd_bytes_bulk_avg;     // Average bytes bulk rate in backward direction
+    double bwd_packet_bulk_avg;    // Average packet bulk rate in backward direction
+    double bwd_bulk_rate_avg;      // Average bulk rate in backward direction
     
     // Subflow features
     uint32_t subflow_fwd_packets;    // Average packets in subflow in forward direction
@@ -129,8 +148,7 @@ typedef struct{
     uint32_t fwd_init_win_bytes;     // Initial window bytes in forward direction
     uint32_t bwd_init_win_bytes;     // Initial window bytes in backward direction
     uint32_t fwd_act_data_packets;   // Count of packets with at least 1 byte of TCP data payload
-    uint16_t fwd_seg_size_min;       // Minimum segment size in forward direction
-    
+ 
     // Active/Idle features
     uint64_t active_min;             // Minimum time flow was active before becoming idle
     double   active_mean;            // Mean time flow was active before becoming idle
@@ -142,6 +160,13 @@ typedef struct{
     uint64_t idle_max;               // Maximum time flow was idle before becoming active
     double   idle_std;               // Std dev of time flow was idle before becoming active 
 } flow_stats_t;
+
+typedef enum{
+  FIN_CLI = 1,
+  ACK_SERV,
+  FIN_SERV,
+  ACK_CLI
+} flow_close_state;
 
 typedef struct {
   uint8_t* data;
