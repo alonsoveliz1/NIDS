@@ -10,11 +10,17 @@
 #include <string.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
+#include <stdbool.h>
 
 typedef struct flow_entry{
   flow_stats_t stats;
   struct flow_entry* next;
 } flow_entry_t;
+
+typedef enum{
+  FWD = 1,
+  BWD = 2
+} flow_direction_t;
 
 struct flow_entry** flow_table = NULL;
 static int flow_count = 0;
@@ -31,12 +37,13 @@ u_int32_t hash_key(flow_key_t* key);
 flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash);
 flow_key_t* get_flow_key(const u_char* pkt_data, size_t len);
 flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, size_t len, uint64_t time_microseconds);
-flow_stats_t* update_flow(flow_key_t* key, uint32_t flow_hash);
+flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, size_t len, uint64_t time_microseconds);
 
 
 uint8_t get_tcp_flags(u_char* data, size_t len);
 uint32_t get_header_len(u_char* data, size_t len);
 uint32_t get_tcp_window_size(u_char* data, size_t len);
+flow_direction_t get_packet_direction(flow_stats_t* flow, flow_key_t* key);
 
 /* Inicializa el hilo para extraer las caracteristicas de los flujos y asigna espacio en memoria para el hashmap */
 bool initialize_feature_extractor(nids_config_t* session_config){
@@ -89,7 +96,7 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
   }
 
   struct ether_header* eth_header = (struct ether_header*)pkt_data;
-  printf("(FFEXTR)[get_flow_key] Ethernet type: 0x%04x\n", ntohs(eth_header->ether_type));
+  // printf("(FFEXTR)[get_flow_key] Ethernet type: 0x%04x\n", ntohs(eth_header->ether_type));
   printf("(FFEXTR)[get_flow_key] Ethernet header size: %zu bytes\n", sizeof(struct ether_header));
 
   if(ntohs(eth_header->ether_type) != ETHERTYPE_IP){
@@ -112,10 +119,10 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
     return NULL;
   }
 
-    printf("(FFEXTR)[get_flow_key] IP version: %u\n", ip_header->ip_v);
+    // printf("(FFEXTR)[get_flow_key] IP version: %u\n", ip_header->ip_v);
     printf("(FFEXTR)[get_flow_key] IP header length: %u bytes\n", ip_header_len);
     printf("(FFEXTR)[get_flow_key] IP total length: %u bytes\n", ntohs(ip_header->ip_len));
-    printf("(FFEXTR)[get_flow_key] IP protocol: %u\n", ip_header->ip_p);
+    // printf("(FFEXTR)[get_flow_key] IP protocol: %u\n", ip_header->ip_p);
 
   if(ip_header_len < 20 || remaining_len < ip_header_len){
     fprintf(stderr, "(FFEXTR)[get_flow_key]: Invalid IP header length \n");
@@ -142,7 +149,7 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
     flow_key->src_port = ntohs(tcp_header->source);
     flow_key->dst_port = ntohs(tcp_header->dest);
   }
-  printf("DEBUG (FFEXTR)[get_flow_key] PROTOCOL: %u \n", flow_key->protocol);
+  // printf("DEBUG (FFEXTR)[get_flow_key] PROTOCOL: %u \n", flow_key->protocol);
   printf("DEBUG (FFEXTR)[get_flow_key] SRC_PORT: %u \n", flow_key->src_port);
   printf("DEBUG (FFEXTR)[get_flow_key] DST_PORT: %u \n", flow_key->dst_port);
 
@@ -184,22 +191,26 @@ void* flow_manager_thread_func(void* arg){
 void process_packet(uint8_t* data, size_t len, uint64_t time_microseconds){
   flow_key_t* key = get_flow_key(data, len);
   if(!key){
+    printf("Key couldnt be computed \n");
     return;
   }
   u_int32_t flow_hash = hash_key(key);
 
-  flow_stats_t* flow = get_flow(key, flow_hash);
-  if(!flow){
+  flow_stats_t* existing_flow = get_flow(key, flow_hash);
+  if(!existing_flow){
     flow_stats_t* created = create_flow(key, flow_hash, data, len, time_microseconds);
     if(!created){
       fprintf(stderr, "(FFEXTR)[process_packet] Flow couldnt be created\n");
       return;
     }
+    printf("Flow %u created\n", flow_hash);
   } else{
-    flow_stats_t* updated = update_flow(key, flow_hash);
+    flow_stats_t* updated = update_flow(key, existing_flow, data, len, time_microseconds);
     if(!updated){
       fprintf(stderr, "(FFEXTR)[process_packet] Flow couldnt be updated\n");
       return;
+    } else{
+      printf("(FFEXTR)[process_packet] Flow was updated successfully\n");
     }
   }
 
@@ -210,18 +221,33 @@ void process_packet(uint8_t* data, size_t len, uint64_t time_microseconds){
 
 /* Por ahora pondre uint32. No puedo shiftear src_port y dst_port una cantidad de bits diferentes, 
  * porque sino los paquetes flow_manager_thread_funcy bwd se interpretarian como flujos distintos */
-uint32_t hash_key(flow_key_t* key){
+uint32_t hash_key(flow_key_t* key) {
   uint32_t hash = 0;
-  hash ^= key->src_ip;
-  hash ^= (uint32_t)(key->dst_ip << 1);
-  hash ^= (uint32_t)(key->src_port << 8);
-  hash ^= (uint32_t)(key->dst_port << 8);
-  hash ^= (uint32_t)(key->protocol << 24);
-  printf("(FFEXTR)[hash_key] Key %u\n", (hash % flow_hashmap_size));
+  
+  // Lower IP && port first to get same hash 
+  uint32_t ip_a, ip_b;
+  uint16_t port_a, port_b;
+  
+  if (key->src_ip < key->dst_ip || (key->src_ip == key->dst_ip && key->src_port < key->dst_port)) {
+    ip_a = key->src_ip;
+    ip_b = key->dst_ip;
+    port_a = key->src_port;
+    port_b = key->dst_port;
+  } else {
+    ip_a = key->dst_ip;
+    ip_b = key->src_ip;
+    port_a = key->dst_port;
+    port_b = key->src_port;
+  }
+  
+  hash ^= ip_a;
+  hash ^= (ip_b << 1);
+  hash ^= ((uint32_t)port_a << 8);
+  hash ^= ((uint32_t)port_b << 8);
+  hash ^= ((uint32_t)key->protocol << 24);
+  
   return (hash % flow_hashmap_size);
-
 }
-
 /* Allocates memory for a new_flow entry, sets flow hash as the key to the flow_table and the flow to the head of its bucket of the linked list */
 flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, size_t len, uint64_t time_microseconds){
   pthread_mutex_lock(&flow_mutex);
@@ -235,13 +261,18 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
   
   memset(&new_entry->stats, 0, sizeof(flow_stats_t));
   memcpy(&new_entry->stats.key, key, sizeof(flow_key_t));
+
+  new_entry->stats.expired = false;
+  new_entry->stats.idle_time = 0;
+  new_entry->stats.time_last_packet_received = time_microseconds;
+
   new_entry->stats.dst_ip_fwd = key->dst_ip;
   new_entry->stats.flow_hash = flow_hash;
   
   new_entry->stats.flow_start_time = time_microseconds;
   new_entry->stats.flow_last_time = time_microseconds;
   new_entry->stats.flow_duration = 0;
-  printf("DEBUG (FFEXTR)[create_flow] Fow_start_time : %ld\n", new_entry->stats.flow_start_time);
+  //printf("DEBUG (FFEXTR)[create_flow] Fow_start_time : %ld\n", new_entry->stats.flow_start_time);
   
   new_entry->stats.total_fwd_packets = 1;
   new_entry->stats.total_bwd_packets = 0;
@@ -266,6 +297,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
   new_entry->stats.flow_iat_std = 0;
   new_entry->stats.flow_iat_max = 0;
   new_entry->stats.flow_iat_min = UINT64_MAX;
+  new_entry->stats.flow_iat_total = 0;
 
   new_entry->stats.fwd_iat_min = UINT64_MAX;
   new_entry->stats.fwd_iat_max = 0;
@@ -312,18 +344,33 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
   size_t packet_size = len - header_length;
   new_entry->stats.fwd_segment_size_avg = packet_size; // Tamaño segmento = paquete - cabeceras
   new_entry->stats.bwd_segment_size_avg = 0;
+  new_entry->stats.fwd_segment_size_tot = packet_size;
+  new_entry->stats.bwd_segment_size_tot = 0;
   new_entry->stats.fwd_seg_size_min = packet_size;
 
   if(packet_size > 100){
+    new_entry->stats.last_packet_is_bulk = true;
+    new_entry->stats.fwd_bulk_start = time(NULL);
+    new_entry->stats.num_fwd_bulk_transmissions = 1;
+    new_entry->stats.fwd_bytes_bulk_tot = packet_size;
+    new_entry->stats.fwd_packet_bulk_tot = 1;
     new_entry->stats.fwd_bytes_bulk_avg = packet_size;
     new_entry->stats.fwd_packet_bulk_avg = 1;
     new_entry->stats.fwd_bulk_rate_avg = packet_size;
     
   } else{
+    new_entry->stats.last_packet_is_bulk = false;
+    new_entry->stats.fwd_bulk_start = time(NULL);
+    new_entry->stats.num_fwd_bulk_transmissions = 0;
     new_entry->stats.fwd_bytes_bulk_avg = 0;
     new_entry->stats.fwd_packet_bulk_avg = 0;
     new_entry->stats.fwd_bulk_rate_avg = 0;
+    new_entry->stats.fwd_bytes_bulk_tot = 0;
+    new_entry->stats.fwd_packet_bulk_tot = 0;
   }
+
+  new_entry->stats.bwd_bytes_bulk_tot = 0;
+  new_entry->stats.bwd_packet_bulk_tot = 0;
   new_entry->stats.bwd_bytes_bulk_avg = 0;
   new_entry->stats.bwd_packet_bulk_avg = 0;
   new_entry->stats.bwd_bulk_rate_avg = 0;
@@ -373,17 +420,171 @@ flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash){
     {
       pthread_mutex_unlock(&flow_mutex);
       return &current_flow->stats;
-    } else{
-      current_flow = current_flow->next;
     }
+    if(current_flow->stats.key.src_ip == key->dst_ip &&
+       current_flow->stats.key.dst_ip == key->src_ip &&
+       current_flow->stats.key.src_port == key->dst_port && 
+       current_flow->stats.key.dst_port == key->src_port && 
+       current_flow->stats.key.protocol == key->protocol)
+    {
+      pthread_mutex_unlock(&flow_mutex);
+      return &current_flow->stats;
+    }
+    current_flow = current_flow->next;
   }
   pthread_mutex_unlock(&flow_mutex);
   return NULL;
 }
 
 
-flow_stats_t* update_flow(flow_key_t* key, uint32_t flow_hash){
-  return NULL;
+flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, size_t len, uint64_t time_microseconds){
+  pthread_mutex_lock(&flow_mutex);
+
+  // Check if flow is expired
+  flow->idle_time = time_microseconds - flow->time_last_packet_received;
+  if(flow->idle_time >= 120){
+    flow->expired = true;
+  }
+
+  flow->flow_last_time = time_microseconds;
+  flow->flow_duration = flow->flow_last_time - flow->flow_start_time;
+
+  flow_direction_t packet_direction = get_packet_direction(flow, key);
+  printf("Flow direction of packet %d\n", packet_direction);
+  
+  uint64_t iat = time_microseconds - flow->time_last_packet_received;
+  flow->flow_iat_total += iat;
+  uint8_t tcp_flags = get_tcp_flags(data, len);
+  uint32_t header_length = get_header_len(data, len);
+  size_t packet_size = len - header_length;
+  
+  // Update flow IAT Min & Max
+  (iat > flow->flow_iat_max) ? flow->flow_iat_max = iat : (void)0;
+  (iat < flow->flow_iat_min) ? flow->flow_iat_min = iat : (void)0;
+
+  // Update packet len Min & Max
+  (flow->packet_len_min < len) ? flow->packet_len_min = len : (void)0;
+  (flow->packet_len_max < len) ? flow->packet_len_max = len : (void)0;
+
+  // Update TCP Flags
+  (tcp_flags & TH_FIN) ? flow->fin_flag_count++ : (void)0;
+  (tcp_flags & TH_SYN) ? flow->syn_flag_count++ : (void)0;
+  (tcp_flags & TH_RST) ? flow->rst_flag_count++ : (void)0;
+  (tcp_flags & TH_PUSH) ? flow->psh_flag_count++ : (void)0;
+  (tcp_flags & TH_ACK) ? flow->ack_flag_count++ : (void)0;
+  (tcp_flags & TH_URG) ? flow->urg_flag_count++ : (void)0;
+  (tcp_flags & 0x80) ? flow->cwr_flag_count++ : (void)0; // CWR Flag
+  (tcp_flags & 0x40) ? flow->ece_flag_count++ : (void)0; // ECE Flag
+  
+  if(packet_direction == FWD){
+    flow->total_fwd_packets++;
+    flow->total_fwd_bytes += len;
+    flow->fwd_iat_total += iat;
+    flow->fwd_header_len += header_length;
+    flow->fwd_packets_per_sec = flow->total_fwd_packets / flow->flow_duration;
+    flow->fwd_segment_size_tot += packet_size;
+    (tcp_flags & TH_PUSH) ? flow->fwd_psh_flags++ : (void)0;
+    (tcp_flags & TH_URG) ? flow->fwd_urg_flags++ : (void)0;
+
+    if(len < flow->fwd_packet_len_min){
+      flow->fwd_packet_len_min = len;
+    }
+    if(len > flow->fwd_packet_len_max){
+      flow->fwd_packet_len_max = len;
+    }
+    if(iat < flow->fwd_iat_min){
+      flow->fwd_iat_min = iat;
+    }
+    if(iat > flow->fwd_iat_max){
+      flow->fwd_iat_max = iat;
+    }
+    (packet_size < flow->fwd_seg_size_min) ? flow->fwd_seg_size_min = packet_size : (void)0;
+    flow->fwd_segment_size_avg = flow->fwd_segment_size_tot / flow->total_fwd_packets;
+
+    if(packet_size > 100){
+      if(flow->last_packet_is_bulk == false){
+        flow->num_fwd_bulk_transmissions++;
+        flow->last_packet_is_bulk = true;
+        flow->fwd_bulk_start = time(NULL);
+        flow->fwd_bulk_end = time(NULL);
+      }
+      flow->fwd_bulk_end = time(NULL);
+      flow->fwd_bytes_bulk_tot += packet_size;
+      flow->fwd_packet_bulk_tot++;
+       
+      flow->fwd_bytes_bulk_avg = flow->fwd_bytes_bulk_tot / flow->num_fwd_bulk_transmissions;
+      flow->fwd_packet_bulk_avg = flow->fwd_packet_bulk_tot / flow->num_fwd_bulk_transmissions;
+      flow->fwd_bulk_duration = flow->fwd_bulk_end - flow->fwd_bulk_start;
+      if(flow->fwd_bulk_duration != 0){
+        flow->fwd_bulk_rate_avg = (flow->fwd_bytes_bulk_tot / flow->fwd_bulk_duration) / flow->num_fwd_bulk_transmissions;
+      }
+    } else{
+        flow->last_packet_is_bulk = false;
+      }
+  } 
+  else { // Packet direction == BWD
+    flow->total_bwd_packets++;
+    flow->total_bwd_bytes += len;
+    flow->bwd_iat_total += iat;
+    flow->bwd_header_len += header_length;
+    flow->bwd_packets_per_sec = flow->total_bwd_packets / flow->flow_duration;
+    flow->bwd_segment_size_tot += packet_size;
+    (tcp_flags & TH_PUSH) ? flow->bwd_psh_flags++ : (void)0;
+    (tcp_flags & TH_URG) ? flow->bwd_urg_flags++ : (void)0;
+
+
+    if(len < flow->bwd_packet_len_min){
+      flow->bwd_packet_len_min = len;
+    }
+    if(len > flow->bwd_packet_len_max){
+      flow->bwd_packet_len_max = len;
+    }
+    if(iat < flow->bwd_iat_min){
+      flow->bwd_iat_min = iat;
+    }
+    if(iat > flow->bwd_iat_max){
+      flow->bwd_iat_max = iat;
+    }
+    flow->bwd_segment_size_avg = flow->bwd_segment_size_tot / flow->total_bwd_packets;
+  }
+  
+  if(flow->total_bwd_bytes > 0){
+    flow->down_up_ratio = flow->total_bwd_bytes / flow->total_fwd_bytes;
+  } else{
+    flow->down_up_ratio = 0;
+  }
+
+  flow->avg_packet_size = (flow->total_fwd_bytes + flow->total_bwd_bytes) / 
+                          (flow->total_fwd_packets + flow->total_bwd_packets);
+
+  /*
+   
+  new_entry->stats.bwd_bytes_bulk_avg = 0;
+  new_entry->stats.bwd_packet_bulk_avg = 0;
+  new_entry->stats.bwd_bulk_rate_avg = 0;
+
+  new_entry->stats.subflow_fwd_packets = 0;
+  new_entry->stats.subflow_fwd_bytes = 0;
+  new_entry->stats.subflow_bwd_packets = 0;
+  new_entry->stats.subflow_bwd_bytes = 0;
+
+  uint32_t init_win_bytes = get_tcp_window_size(data,len);
+  new_entry->stats.fwd_init_win_bytes = init_win_bytes;
+  new_entry->stats.bwd_init_win_bytes = 0;
+  new_entry->stats.fwd_act_data_packets = (packet_size > 1) ? 1 : 0;
+  
+  new_entry->stats.active_min = 0;
+  new_entry->stats.active_mean = 0;
+  new_entry->stats.active_max = 0;
+  new_entry->stats.active_std = 0;
+
+  new_entry->stats.idle_min = 0;
+  new_entry->stats.idle_mean = 0;
+  new_entry->stats.idle_max = 0;
+  new_entry->stats.idle_std = 0;
+  */
+  pthread_mutex_unlock(&flow_mutex);
+  return flow;
 }
 
 
@@ -466,9 +667,7 @@ uint32_t get_header_len(uint8_t* data, size_t len) {
             const struct tcphdr* tcp_header = (const struct tcphdr*)(ip_packet + ip_header_len);
             header_len += tcp_header->th_off * 4; // TCP header length
         }
-    } else if (ip_header->ip_p == IPPROTO_UDP) {
-        header_len += 8; // UDP header is always 8 bytes
-    }
+  } 
 
     return header_len;
 }
@@ -508,4 +707,15 @@ uint32_t get_tcp_window_size(u_char* data, size_t len) {
     uint16_t window_size = ntohs(tcp_header->th_win);
     
     return window_size;
+}
+
+
+flow_direction_t get_packet_direction(flow_stats_t* flow, flow_key_t* key){
+  printf("DEBUG [get_packet_direction] %u\n", flow->dst_ip_fwd);
+  printf("DEBUG [get_packet_direction] %u\n", key->dst_ip);
+  if(flow->dst_ip_fwd == key->dst_ip){
+    return FWD;
+  } else{
+    return BWD;
+  }
 }
