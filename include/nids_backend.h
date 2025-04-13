@@ -28,7 +28,6 @@ typedef struct{
 typedef struct{
     bool expired;
     uint64_t idle_time;              // Time in which i'm not receiving any packets
-    uint64_t time_last_packet_received;
 
     flow_key_t key;
     uint32_t dst_ip_fwd;
@@ -112,26 +111,33 @@ typedef struct{
     uint16_t ece_flag_count;         // Number of packets with ECE
     
     // Ratio and averages
-    double   down_up_ratio;          // Download and upload ratio
-    double   avg_packet_size;        // Average size of packet
-    double   fwd_segment_size_avg;   // Average size in forward direction
-    double   bwd_segment_size_avg;   // Average size in backward direction
+    double down_up_ratio;          // Download and upload ratio
+    double avg_packet_size;        // Average size of packet
+    double fwd_segment_size_avg;   // Average size in forward direction
+    double bwd_segment_size_avg;   // Average size in backward direction
     double fwd_segment_size_tot;
     double bwd_segment_size_tot;
     double fwd_seg_size_min;       // Minimum segment size in forward direction
 
     // Bulk features
-    bool last_packet_is_bulk;
+    bool last_fwd_packet_is_bulk;
     int num_fwd_bulk_transmissions;
     time_t fwd_bulk_start;
     time_t fwd_bulk_end;
     time_t fwd_bulk_duration;
-    double fwd_bytes_bulk_tot;     // Total of bytes transmitted in bulk in the forward direction
+    double fwd_bytes_curr_bulk;     // Total of bytes transmitted in bulk in the forward direction
+    double fwd_bytes_bulk_tot;
     double fwd_packet_bulk_tot;    // Total of packet transmitted in bulk in the forward direction
     double fwd_bytes_bulk_avg;     // Average bytes bulk rate in forward direction
     double fwd_packet_bulk_avg;    // Average packet bulk rate in forward direction
     double fwd_bulk_rate_avg;      // Average bulk rate in forward direction
-
+    
+    bool last_bwd_packet_is_bulk;
+    int num_bwd_bulk_transmissions;
+    time_t bwd_bulk_start;
+    time_t bwd_bulk_end;
+    time_t bwd_bulk_duration;
+    double bwd_bytes_curr_bulk;
     double bwd_bytes_bulk_tot;
     double bwd_packet_bulk_tot;
     double bwd_bytes_bulk_avg;     // Average bytes bulk rate in backward direction
@@ -139,8 +145,10 @@ typedef struct{
     double bwd_bulk_rate_avg;      // Average bulk rate in backward direction
     
     // Subflow features
+    int total_fwd_subflows;
     uint32_t subflow_fwd_packets;    // Average packets in subflow in forward direction
     uint32_t subflow_fwd_bytes;      // Average bytes in subflow in forward direction
+    int total_bwd_subflows;
     uint32_t subflow_bwd_packets;    // Average packets in subflow in backward direction
     uint32_t subflow_bwd_bytes;      // Average bytes in subflow in backward direction
     
