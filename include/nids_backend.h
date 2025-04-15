@@ -24,13 +24,20 @@ typedef struct{
   //ISN del flujo para identificarlo
 } flow_key_t;
 
+typedef enum{
+    ACTIVE = 1,
+    IDLE = 2
+} flow_status_t;
+
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
+    flow_key_t key;
+
     bool expired;
+    flow_status_t status;            // Flow [active, idle]
     uint64_t idle_time;              // Time in which i'm not receiving any packets
 
-    flow_key_t key;
-    uint32_t dst_ip_fwd;
+    uint32_t dst_ip_fwd;             // Feature to check if flow is fwd or bwd
     uint32_t flow_hash;              // Hash of the flow key
     
     // Flow duration
@@ -111,21 +118,21 @@ typedef struct{
     uint16_t ece_flag_count;         // Number of packets with ECE
     
     // Ratio and averages
-    double down_up_ratio;          // Download and upload ratio
-    double avg_packet_size;        // Average size of packet
-    double fwd_segment_size_avg;   // Average size in forward direction
-    double bwd_segment_size_avg;   // Average size in backward direction
-    double fwd_segment_size_tot;
-    double bwd_segment_size_tot;
-    double fwd_seg_size_min;       // Minimum segment size in forward direction
+    double down_up_ratio;            // Download and upload ratio
+    double avg_packet_size;          // Average size of packet
+    double fwd_segment_size_avg;     // Average size in forward direction
+    double bwd_segment_size_avg;     // Average size in backward direction
+    double fwd_segment_size_tot;     // Sum of size in forward direction
+    double bwd_segment_size_tot;     // Sum of size in bwd direction
+    double fwd_seg_size_min;         // Minimum segment size in forward direction
 
     // Bulk features
-    bool last_fwd_packet_is_bulk;
-    int num_fwd_bulk_transmissions;
+    bool last_fwd_packet_is_bulk;      
+    int num_fwd_bulk_transmissions;  // Num of fwd bulk transmissions
     time_t fwd_bulk_start;
     time_t fwd_bulk_end;
     time_t fwd_bulk_duration;
-    double fwd_bytes_curr_bulk;     // Total of bytes transmitted in bulk in the forward direction
+    double fwd_bytes_curr_bulk;    // Total of bytes transmitted in bulk in the forward direction
     double fwd_bytes_bulk_tot;
     double fwd_packet_bulk_tot;    // Total of packet transmitted in bulk in the forward direction
     double fwd_bytes_bulk_avg;     // Average bytes bulk rate in forward direction
@@ -158,11 +165,15 @@ typedef struct{
     uint32_t fwd_act_data_packets;   // Count of packets with at least 1 byte of TCP data payload
  
     // Active/Idle features
+    uint64_t active_time_tot;
+    uint64_t curr_active_time_tot;
     uint64_t active_min;             // Minimum time flow was active before becoming idle
     double   active_mean;            // Mean time flow was active before becoming idle
     uint64_t active_max;             // Maximum time flow was active before becoming idle
     double   active_std;             // Std dev of time flow was active before becoming idle
     
+    uint64_t idle_time_tot;
+    uint64_t curr_idle_time_tot;
     uint64_t idle_min;               // Minimum time flow was idle before becoming active
     double   idle_mean;              // Mean time flow was idle before becoming active
     uint64_t idle_max;               // Maximum time flow was idle before becoming active
