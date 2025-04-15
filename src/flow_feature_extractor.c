@@ -12,6 +12,8 @@
 #include <netinet/tcp.h>
 #include <stdbool.h>
 
+#define IDLE_THRESHOLD 1000000
+
 typedef struct flow_entry{
   flow_stats_t stats;
   struct flow_entry* next;
@@ -21,6 +23,7 @@ typedef enum{
   FWD = 1,
   BWD = 2
 } flow_direction_t;
+
 
 struct flow_entry** flow_table = NULL;
 static int flow_count = 0;
@@ -292,7 +295,8 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
   
     memset(&new_entry->stats, 0, sizeof(flow_stats_t));
     memcpy(&new_entry->stats.key, key, sizeof(flow_key_t));
-
+    
+    new_entry->stats.status = ACTIVE;
     new_entry->stats.expired = false;
     new_entry->stats.idle_time = 0;
 
@@ -484,11 +488,29 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     uint32_t header_length = get_header_len(data, len);
     size_t packet_size = len - header_length;
     uint32_t win_bytes = get_tcp_window_size(data,len);
-
-    flow->idle_time = time_microseconds - flow->flow_last_time; // If I get a packet iat == idle_time
-    if(flow->idle_time >= 120000000){ // 120 seconds w/o packets -> expired
+    
+    if(flow->idle_time == 120000000){
         flow->expired = true;
+        return flow;
+    } else {
+        flow->idle_time = 0;
     }
+    
+    
+
+    if(flow->status == ACTIVE){
+        flow->active_time_tot += iat;
+        flow->curr_active_time_tot += iat;
+        (flow->curr_active_time_tot < flow->active_min) ? flow->active_min = flow->curr_active_time_tot : (void)0;
+        (flow->curr_active_time_tot > flow->active_max) ? flow->active_max = flow->curr_active_time_tot : (void)0;
+    } else{
+        flow->idle_time_tot += iat;
+        flow->curr_idle_time_tot += iat;
+        (flow->curr_idle_time_tot < flow->idle_min) ? flow->idle_min = flow->curr_idle_time_tot : (void)0;
+        (flow->curr_idle_time_tot > flow->idle_max) ? flow->idle_max = flow->curr_idle_time_tot : (void)0;
+        flow->curr_active_time_tot = 0;
+        flow->status = ACTIVE;
+    } 
 
     flow->flow_last_time = time_microseconds; // Now we can update flow_last_time
     flow->flow_duration = flow->flow_last_time - flow->flow_start_time; 
@@ -623,7 +645,7 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
         }
 
         (flow->bwd_init_win_bytes  != 0 && win_bytes != 0) ? flow->bwd_init_win_bytes = win_bytes : (void)0; 
-    } // END IF PACKET DIRECTION == BWD
+      } // END IF PACKET DIRECTION == BWD
 
     // Overall statistics
     if(flow->total_bwd_bytes > 0){
@@ -635,24 +657,9 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     flow->avg_packet_size = (flow->total_fwd_bytes + flow->total_bwd_bytes) / 
                             (flow->total_fwd_packets + flow->total_bwd_packets);
     
-    
-  
-  /*
-  new_entry->stats.fwd_act_data_packets = (packet_size > 1) ? 1 : 0;
-  
-  new_entry->stats.active_min = 0;
-  new_entry->stats.active_mean = 0;
-  new_entry->stats.active_max = 0;
-  new_entry->stats.active_std = 0;
-
-  new_entry->stats.idle_min = 0;
-  new_entry->stats.idle_mean = 0;
-  new_entry->stats.idle_max = 0;
-  new_entry->stats.idle_std = 0;
-  */
-  pthread_mutex_unlock(&flow_mutex);
-  return flow;
-}
+    pthread_mutex_unlock(&flow_mutex);
+    return flow;
+  }
 
 
 /* Extract TCP flags from packet data */
