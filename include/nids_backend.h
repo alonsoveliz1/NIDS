@@ -11,6 +11,7 @@ typedef struct{
   char* interface_name;
   int bufsize;
   int flow_table_init_size;
+  char* model_path;
 } nids_config_t;
 
 extern nids_config_t* config;
@@ -26,8 +27,18 @@ typedef struct{
 
 typedef enum{
     ACTIVE = 1,
-    IDLE = 2
+    IDLE = 2,
+    CLOSED = 3,
+    EXPIRED = 4
 } flow_status_t;
+
+typedef enum{
+  OTHER = 0,
+  FIN_CLI = 1,
+  ACK_FIN_SV,
+  ACK_CLI
+} flow_close_state_t;
+
 
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
@@ -36,6 +47,7 @@ typedef struct{
     bool expired;
     flow_status_t status;            // Flow [active, idle]
     uint64_t idle_time;              // Time in which i'm not receiving any packets
+    flow_close_state_t close_state; 
 
     uint32_t dst_ip_fwd;             // Feature to check if flow is fwd or bwd
     uint32_t flow_hash;              // Hash of the flow key
@@ -180,13 +192,6 @@ typedef struct{
     double   idle_std;               // Std dev of time flow was idle before becoming active 
 } flow_stats_t;
 
-typedef enum{
-  FIN_CLI = 1,
-  ACK_SERV,
-  FIN_SERV,
-  ACK_CLI
-} flow_close_state;
-
 typedef struct {
   uint8_t* data;
   size_t len;
@@ -218,6 +223,8 @@ bool initialize_sniffer(nids_config_t* config);
 bool start_sniffer(void);
 void stop_sniffer(void);
 //static void pcap_handler(u_char* user, const struct pcap_pkthdsh r* h, const u_char* bytes);
+
+bool init_model(const char *model_path);
 
 bool initialize_feature_extractor(nids_config_t*);
 

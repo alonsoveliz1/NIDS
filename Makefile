@@ -3,7 +3,7 @@
 # Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -O2 -g -std=c11
-LDFLAGS = 
+LDFLAGS += -L$(ONNX_LIB) 
 
 # Directories
 SRC_DIR = src
@@ -20,19 +20,24 @@ OBJ_FILES = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRC_FILES))
 TARGET = $(BIN_DIR)/nids_backend
 
 # Include directories
-INCLUDES = -I$(INC_DIR) -I/usr/local/include 
+INCLUDES = -I$(INC_DIR) -I/usr/local/include -I$(ONNX_INCLUDE) 
+
+# External libraries 
+ONNX_INCLUDE = $(LIB_DIR)/onnxruntime/include
+ONNX_LIB = $(LIB_DIR)/onnxruntime/lib
 
 # Libraries
-LIBS = -lpcap -ljson-c 
+LIBS = -lpcap -ljson-c -lonnxruntime
+
 
 # Operating system detection
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Linux)
     CFLAGS += -D_GNU_SOURCE
-    LDFLAGS += -Wl,-rpath,'$$ORIGIN/../lib'
+    LDFLAGS += -Wl,-rpath,'$$ORIGIN/../lib/onnxruntime/lib'
 endif
 ifeq ($(UNAME_S),Darwin)
-    LDFLAGS += -Wl,-rpath,@executable_path/../lib
+    LDFLAGS += -Wl,-rpath,@executable_path/../lib/onnxruntime/lib
 endif
 
 # Default target
@@ -114,13 +119,16 @@ check:
 packet_sniffer: directories $(OBJ_DIR)/packet_sniffer.o $(OBJ_DIR)/nids_main.o
 	$(CC) $(CFLAGS) -o $(BIN_DIR)/$@ $^ $(LDFLAGS) $(LIBS)
 
-flow_manager: directories $(OBJ_DIR)/flow_manager.o $(OBJ_DIR)/nids_main.o
+flow_manager: directories $(OBJ_DIR)/flow_feature_extractor.o $(OBJ_DIR)/nids_main.o
 	$(CC) $(CFLAGS) -o $(BIN_DIR)/$@ $^ $(LDFLAGS) $(LIBS)
 
 model_interface: directories $(OBJ_DIR)/model_interface.o $(OBJ_DIR)/nids_main.o
 	$(CC) $(CFLAGS) -o $(BIN_DIR)/$@ $^ $(LDFLAGS) $(LIBS)
 
 alert_system: directories $(OBJ_DIR)/alert_system.o $(OBJ_DIR)/nids_main.o
+	$(CC) $(CFLAGS) -o $(BIN_DIR)/$@ $^ $(LDFLAGS) $(LIBS)
+
+flow_classifier: directories $(OBJ_DIR)/flow_analyser.o $(OBJ_DIR)/nids_main.o
 	$(CC) $(CFLAGS) -o $(BIN_DIR)/$@ $^ $(LDFLAGS) $(LIBS)
 
 # Help target

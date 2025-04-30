@@ -25,6 +25,7 @@ int main(int argc, char* argv[]){
   config->interface_name = "eth0";
   config->bufsize = 65535; // MAX VALUE FOR TCP PACKETS
   config->flow_table_init_size = 10000;
+  config->model_path = "../xgboost_model.onnx"; 
 
   int options;
   char* config_path = NULL;
@@ -86,6 +87,11 @@ int main(int argc, char* argv[]){
     return 1;
   }
 
+  if(!init_model(config->model_path)){
+    fprintf(stderr, "Failed to start the model");
+    return 1;
+  }
+
   // Tengo que hacer que pare cuando el usuario haga ctr+c no poner a dormir esto y que pare cuando deje de dormir
   while(running){
     sleep(1);
@@ -122,6 +128,11 @@ static bool load_config(const char* config_path){
   if(json_object_object_get_ex(json_config,"flow_table_init_size", &obj)){
     config->flow_table_init_size = json_object_get_int(obj);
     printf("Flow table init size %d\n", config->flow_table_init_size);
+  }
+
+  if(json_object_object_get_ex(json_config, "model_path", &obj)){
+    config->model_path = strdup(json_object_get_string(obj));
+    printf("Model_path %s\n", config->model_path);
   }
 
   json_object_put(json_config);

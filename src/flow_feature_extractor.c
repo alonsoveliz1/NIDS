@@ -42,6 +42,8 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len);
 flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, size_t len, uint64_t time_microseconds);
 flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, size_t len, uint64_t time_microseconds);
 
+bool update_all_flows();
+bool expire_flows();
 
 uint8_t get_tcp_flags(u_char* data, size_t len);
 uint32_t get_header_len(u_char* data, size_t len);
@@ -195,11 +197,27 @@ void* flow_manager_thread_func(void* arg){
 
     pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setname_np(pthread_self(), "flow_mngr_thread");
-  
+    pthread_setname_np(pthread_self(), "flow_manager");
+    
+    time_t last_update_time = time(NULL);
+    time_t last_expire_time = time(NULL);
+
     while(running){
         if(dequeue_packet(&packet)){
             process_packet(packet.data, packet.len, packet.time_microseconds);
+            free(packet.data);
+        }
+        
+        time_t curr_time = time(NULL);
+        time_t update_time = curr_time - last_update_time;
+        time_t expire_time = curr_time - last_expire_time;
+        
+        if(update_time >= 5){
+            update_all_flows();
+            last_update_time = curr_time; 
+        } else if (expire_time >= 30){
+            expire_flows();
+            last_expire_time = curr_time;
         }
     }
     return NULL;
@@ -299,6 +317,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     new_entry->stats.status = ACTIVE;
     new_entry->stats.expired = false;
     new_entry->stats.idle_time = 0;
+    new_entry->stats.close_state = OTHER;
 
     new_entry->stats.dst_ip_fwd = key->dst_ip;
     new_entry->stats.flow_hash = flow_hash;
@@ -386,6 +405,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
         new_entry->stats.last_fwd_packet_is_bulk = true;
         new_entry->stats.fwd_bulk_start = time(NULL);
         new_entry->stats.num_fwd_bulk_transmissions = 1;
+        new_entry->stats.fwd_bytes_curr_bulk = packet_size;
         new_entry->stats.fwd_bytes_bulk_tot = packet_size;
         new_entry->stats.fwd_packet_bulk_tot = 1;
         new_entry->stats.fwd_bytes_bulk_avg = packet_size;
@@ -394,7 +414,6 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     
     } else {
         new_entry->stats.last_fwd_packet_is_bulk = false;
-        new_entry->stats.fwd_bulk_start = time(NULL);
         new_entry->stats.num_fwd_bulk_transmissions = 0;
         new_entry->stats.fwd_bytes_bulk_avg = 0;
         new_entry->stats.fwd_packet_bulk_avg = 0;
@@ -437,6 +456,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     flow_table[flow_hash] = new_entry;
   
     flow_count++;
+    printf("DEBUG (FFEXTR)[create_flow] Num flows: %d\n", flow_count);
 
     pthread_mutex_unlock(&flow_mutex);
     return &new_entry->stats;
@@ -657,10 +677,56 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     flow->avg_packet_size = (flow->total_fwd_bytes + flow->total_bwd_bytes) / 
                             (flow->total_fwd_packets + flow->total_bwd_packets);
     
+    // Check close_state handshake status
+    if(packet_direction == FWD && (tcp_flags & TH_FIN)){
+        flow->close_state = FIN_CLI;
+    }
+    if(packet_direction == BWD && (tcp_flags & TH_ACK) && (tcp_flags & TH_FIN) && flow->close_state == FIN_CLI){
+        flow->close_state = ACK_FIN_SV;
+    }
+    if(packet_direction == FWD && (tcp_flags & TH_ACK) && flow->close_state == ACK_FIN_SV){
+        flow->close_state = ACK_CLI;
+        flow->status = CLOSED;
+    }
     pthread_mutex_unlock(&flow_mutex);
     return flow;
   }
 
+bool expire_flows(){
+    pthread_mutex_lock(&flow_mutex);
+    uint64_t current_time = time(NULL) * 1000000;
+       for(int i = 0; i < flow_hashmap_size; i++){
+        flow_entry_t* current = flow_table[i];
+        flow_entry_t* prev = NULL;
+        while(current != NULL){
+            if(current->stats.expired){
+                current = current->next;
+                continue;
+            }
+            current->stats.idle_time = current_time - current->stats.flow_last_time;
+            current->stats.idle_time_tot += current_time - current->stats.flow_last_time;
+            current->stats.curr_idle_time_tot += current_time - current->stats.flow_last_time;
+            if(current->stats.idle_time >= 120000000){
+                current->stats.status = EXPIRED;
+                current->stats.expired = true;
+                // extract_cumulative_features(current);
+                // classify_flow(current);
+            }
+            if(current->stats.idle_time >= IDLE_THRESHOLD){
+                current->stats.status = IDLE;
+            }
+            pthread_mutex_unlock(&flow_mutex);
+        }
+    }
+    return true;
+}
+
+bool update_all_flows(){
+    for(int i = 0; i < flow_hashmap_size; i++){
+      flow_entry_t* current = flow_table[i];
+      // extract_cumulative_features(current);
+    }
+}
 
 /* Extract TCP flags from packet data */
 uint8_t get_tcp_flags(u_char* data, size_t len) {
