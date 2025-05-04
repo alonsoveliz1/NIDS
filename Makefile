@@ -20,14 +20,14 @@ OBJ_FILES = $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRC_FILES))
 TARGET = $(BIN_DIR)/nids_backend
 
 # Include directories
-INCLUDES = -I$(INC_DIR) -I/usr/local/include -I$(ONNX_INCLUDE) 
+INCLUDES = -I$(INC_DIR) -I/usr/local/include -I$(ONNX_INCLUDE) -I$(SRC_DIR) 
 
 # External libraries 
 ONNX_INCLUDE = $(LIB_DIR)/onnxruntime/include
 ONNX_LIB = $(LIB_DIR)/onnxruntime/lib
 
 # Libraries
-LIBS = -lpcap -ljson-c -lonnxruntime
+LIBS = -lpcap -ljson-c -lonnxruntime -lm
 
 
 # Operating system detection
