@@ -1,6 +1,8 @@
 #ifndef NIDS_BACKEND_H
 #define NIDS_BACKEND_H
+#define NIDS_VERSION "1.0.0"
 
+#include <stdio.h>
 #include <stdbool.h>
 #include <time.h>
 #include <stdint.h>
@@ -22,65 +24,60 @@ typedef struct{
   uint16_t src_port;
   uint16_t dst_port;
   uint8_t protocol;
-  //ISN del flujo para identificarlo
 } flow_key_t;
 
 typedef enum{
-    ACTIVE = 1,
-    IDLE = 2,
-    CLOSED = 3,
-    EXPIRED = 4
+    FLOW_STATUS_ACTIVE = 1,
+    FLOW_STATUS_IDLE = 2,
+    FLOW_STATUS_CLOSED = 3,
+    FLOW_STATUS_EXPIRED = 4
 } flow_status_t;
 
 typedef enum{
-  OTHER = 0,
-  FIN_CLI = 1,
-  ACK_FIN_SV,
-  ACK_CLI
+  CLOSE_STATE_OTHER = 0,             // No closign sequence detected
+  CLOSE_STATE_FIN_CLI,               // Cli sent FIN           
+  CLOSE_STATE_ACK_FIN_SV,            // Server ACK+FIN
+  CLOSE_STATE_ACK_CLI                // Client ACK, end of closing handshake
 } flow_close_state_t;
 
 
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
-    flow_key_t key;
+    flow_key_t key;                  // Key {src_ip, dst_ip, src_port, dst_port, protocol}
 
-    bool expired;
     flow_status_t status;            // Flow [active, idle, closed, expired]
-    uint64_t last_checked_time;      // Last time that the flow was updated or received a packet 
-    flow_close_state_t close_state; 
-    //
+    flow_close_state_t close_state;  // TCP Closing handshake [non-closing, fin-cli, ack_fin_sv, ack_cli] 
 
     uint32_t dst_ip_fwd;             // Feature to check if flow is fwd or bwd
     uint32_t flow_hash;              // Hash of the flow key
-    //
-
+    
     // Flow duration
     uint64_t flow_start_time;        // Start timestamp of the flow
     uint64_t flow_last_time;         // Last seen timestamp (last packet seen in flow)
-    uint64_t flow_duration;          // Duration of the flow in microseconds
-    //
+    uint64_t flow_duration;          // Duration of the flow in microseconds 
+    uint64_t last_checked_time;      // Last time that the flow was updated or received a packet 
 
     // Packet counts
-    uint32_t total_fwd_packets;      // Total packets in forward direction
-    uint32_t total_bwd_packets;      // Total packets in backward direction
-    //
+    uint64_t total_packets;
+    uint64_t total_fwd_packets;      // Total packets in forward direction
+    uint64_t total_bwd_packets;      // Total packets in backward direction
 
     // Size-based features
+    uint64_t total_bytes;
     uint64_t total_fwd_bytes;        // Total bytes in forward direction
     uint64_t total_bwd_bytes;        // Total bytes in backward direction
-    //
 
     uint16_t fwd_packet_len_min;     // Min packet size in forward direction
     uint16_t fwd_packet_len_max;     // Max packet size in forward direction
     double   fwd_packet_len_mean;    // Mean packet size in forward direction
     double   fwd_packet_len_std;     // Std dev of packet size in forward direction
-    //
+    double   fwd_packet_len_M2;       // Variance accumulator
 
     uint16_t bwd_packet_len_min;     // Min packet size in backward direction
     uint16_t bwd_packet_len_max;     // Max packet size in backward direction
     double   bwd_packet_len_mean;    // Mean packet size in backward direction
     double   bwd_packet_len_std;     // Std dev of packet size in backward direction
-    //
+    double   bwd_packet_len_M2;       // Variance accumulator
 
     // Flow rate features
     double   flow_bytes_per_sec;     // Flow bytes per second
@@ -92,33 +89,34 @@ typedef struct{
     uint64_t flow_iat_max;           // Max time between packets
     uint64_t flow_iat_min;           // Min time between packets
     uint64_t flow_iat_total;         // For then to compute with packet num
-    //
-
+    double   flow_iat_M2;            // Variance accumulator to compute std
+    
+    // Forward Inter-Arrival
     uint64_t fwd_iat_min;            // Min time between forward packets
     uint64_t fwd_iat_max;            // Max time between forward packets
     double   fwd_iat_mean;           // Mean time between forward packets
     double   fwd_iat_std;            // Std dev of time between forward packets
     uint64_t fwd_iat_total;          // Total time between forward packets
-    //
+    double   fwd_iat_M2;             // Variance accumulator
 
+    // Backward Inter-Arrival
     uint64_t bwd_iat_min;            // Min time between backward packets
     uint64_t bwd_iat_max;            // Max time between backward packets
     double   bwd_iat_mean;           // Mean time between backward packets
     double   bwd_iat_std;            // Std dev of time between backward packets
     uint64_t bwd_iat_total;          // Total time between backward packets
-    //
+    double   bwd_iat_M2;             // Variance accumulator
 
     // FWD && BWD Specific flag counts
     uint16_t fwd_psh_flags;          // Number of PSH flags in forward direction
     uint16_t bwd_psh_flags;          // Number of PSH flags in backward direction
     uint16_t fwd_urg_flags;          // Number of URG flags in forward direction
     uint16_t bwd_urg_flags;          // Number of URG flags in backward direction
-    //
+    
     
     // Header information
     uint32_t fwd_header_len;         // Total bytes used for headers in forward direction
     uint32_t bwd_header_len;         // Total bytes used for headers in backward direction
-    //
 
     // Packet rate
     double   fwd_packets_per_sec;    // Forward packets per second
@@ -130,7 +128,7 @@ typedef struct{
     double   packet_len_mean;        // Mean length of a packet
     double   packet_len_std;         // Std dev of packet length
     double   packet_len_variance;    // Variance of packet length
-    //
+    double  packet_len_M2;           // Variance accumulator
 
     // Flag counts
     uint16_t fin_flag_count;         // Number of packets with FIN
@@ -144,7 +142,7 @@ typedef struct{
     //
 
     // Ratio and averages
-    double down_up_ratio;            // Download and upload ratio
+    double down_up_ratio;            // Download and upload ratio (total_bwd_bytes/total_fwd_bytes)
     double avg_packet_size;          // Average size of packet
     double fwd_segment_size_avg;     // Average size in forward direction
     double bwd_segment_size_avg;     // Average size in backward direction
@@ -154,38 +152,38 @@ typedef struct{
 
 
     // FWD Bulk Features
-    bool in_fwd_bulk_transmission;
-    int count_possible_fwd_bulk_packets;
-    int num_fwd_bulk_transmissions;  // Num of fwd bulk transmissions
-    time_t fwd_bulk_start;
-    time_t fwd_bulk_end;
-    time_t fwd_bulk_duration;
-    double fwd_bytes_curr_bulk;    // Total of bytes transmitted in bulk in the forward direction
-    double fwd_bytes_bulk_tot;
-    double fwd_packet_bulk_tot;    // Total of packet transmitted in bulk in the forward direction
-    double fwd_bytes_bulk_avg;     // Average bytes bulk rate in forward direction
-    double fwd_packet_bulk_avg;    // Average packet bulk rate in forward direction
-    double fwd_bulk_rate_avg;      // Average bulk rate in forward direction
+    bool in_fwd_bulk_transmission;       // Variable to check whether being inside a bulk transmission or not
+    int count_possible_fwd_bulk_packets; // Accumulator oc bulk packets transmitted in a row
+    int num_fwd_bulk_transmissions;      // Num of fwd bulk transmissions
+    time_t fwd_bulk_start;               // Current fwd bulk transmission start
+    time_t fwd_bulk_end;                 // Current fwd bulk transmission end
+    time_t fwd_bulk_duration;            // Total fwd bulk duration accumulator
+    double fwd_bytes_curr_bulk;          // Total of bytes transmitted in the current bulk in the forward direction
+    double fwd_bytes_bulk_tot;           // Total of bytes transmitted in bulk in the forward direction
+    double fwd_packet_bulk_tot;          // Total of packet transmitted in bulk in the forward direction
+    double fwd_bytes_bulk_avg;           // Average bytes bulk rate in forward direction
+    double fwd_packet_bulk_avg;          // Average packet bulk rate in forward direction
+    double fwd_bulk_rate_avg;            // Average bulk rate in forward direction
    
-    // BWD Bulk features
-    bool in_bwd_bulk_transmission;
-    int count_possible_bwd_bulk_packets;
-    int num_bwd_bulk_transmissions;
-    time_t bwd_bulk_start;
-    time_t bwd_bulk_end;
-    time_t bwd_bulk_duration;
-    double bwd_bytes_curr_bulk;
-    double bwd_bytes_bulk_tot;
-    double bwd_packet_bulk_tot;
-    double bwd_bytes_bulk_avg;     // Average bytes bulk rate in backward direction
-    double bwd_packet_bulk_avg;    // Average packet bulk rate in backward direction
-    double bwd_bulk_rate_avg;      // Average bulk rate in backward direction
-    
+    // BWD Bulk Features
+    bool in_bwd_bulk_transmission;       // Variable to check whether being inside a bulk transmission or not
+    int count_possible_bwd_bulk_packets; // Accumulator of bulk packets transmitted in a row
+    int num_bwd_bulk_transmissions;      // Num of bwd bulk transmissions
+    time_t bwd_bulk_start;               // Current bwd bulk transmission start
+    time_t bwd_bulk_end;                 // Current bwd bulk transmission end
+    time_t bwd_bulk_duration;            // Total bwd bulk duration accumulator
+    double bwd_bytes_curr_bulk;          // Total of bytes transmitted in the current bulk in the backward direction
+    double bwd_bytes_bulk_tot;           // Total of bytes transmitted in bulk in the backward direction
+    double bwd_packet_bulk_tot;          // Total of packets transmitted in bulk in the backward direction
+    double bwd_bytes_bulk_avg;           // Average bytes bulk rate in backward direction
+    double bwd_packet_bulk_avg;          // Average packet bulk rate in backward direction
+    double bwd_bulk_rate_avg;            // Average bulk rate in backward direction
+ 
     // Subflow features
-    int total_fwd_subflows;
+    int total_fwd_subflows;          // Total subflows in fwd direction
     uint32_t subflow_fwd_packets;    // Average packets in subflow in forward direction
     uint32_t subflow_fwd_bytes;      // Average bytes in subflow in forward direction
-    int total_bwd_subflows;
+    int total_bwd_subflows;          // Total subflows in bwd direction
     uint32_t subflow_bwd_packets;    // Average packets in subflow in backward direction
     uint32_t subflow_bwd_bytes;      // Average bytes in subflow in backward direction
     
@@ -195,26 +193,35 @@ typedef struct{
     uint32_t fwd_act_data_packets;   // Count of packets with at least 1 byte of TCP data payload
  
     // Active/Idle features
+    uint64_t active_counts;
     uint64_t active_time_tot;
     uint64_t curr_active_time_tot;
     uint64_t active_min;             // Minimum time flow was active before becoming idle
     double   active_mean;            // Mean time flow was active before becoming idle
     uint64_t active_max;             // Maximum time flow was active before becoming idle
     double   active_std;             // Std dev of time flow was active before becoming idle
-    //
+    double   active_time_M2;       // Variance accumulator
 
-
+    uint64_t idle_counts;
     uint64_t idle_time_tot;          // Current active time, if turns idle:0
     uint64_t curr_idle_time_tot;     // Current idle time, if turns active: 0
     uint64_t idle_min;               // Minimum time flow was idle before becoming active
     double   idle_mean;              // Mean time flow was idle before becoming active
     uint64_t idle_max;               // Maximum time flow was idle before becoming active
     double   idle_std;               // Std dev of time flow was idle before becoming active
-    //
+    double   idle_time_M2;           // Variance accumulator
 
-    bool classified;
-    bool benign;
-    float confidence;
+    bool serv_http;                  // HTTP Service (port 80, 81, 8000, 8081)
+    bool serv_https;                 // HTTPS Service (port 443)
+    bool serv_mqtt;                  // MQTT Service (port 1883)
+    bool serv_other;                 // Other service (rest of the ports)
+    bool serv_iot_port;              // IoT Service (ports 8000-9000)
+    bool serv_ephimeral;             // Ephemeral port (49152-65535)
+    bool serv_ssh;                   // SSH service (port 22) 
+
+    bool classified;                 // Flow has been classified
+    bool benign;                     // Flow is benign
+    float confidence;                // Classification confidence
 
 } flow_stats_t;
 
@@ -252,7 +259,25 @@ void stop_sniffer(void);
 
 bool init_model(const char *model_path);
 
-bool initialize_feature_extractor(nids_config_t*);
+/**
+ * Initialize the flow feature extractor
+ * 
+ * @param config Pointer to configuration structure
+ * @return true if initialization successful, false otherwise
+ */
+bool initialize_feature_extractor(nids_config_t* config);
+
+/**
+ * Start the flow manager thread
+ * 
+ * @return true if thread started successfully, false otherwise
+ */
+bool start_flow_manager(void);
+
+/**
+ * Stop the flow manager thread and clean up resources
+ */
+void stop_flow_manager(void);
 
 
 bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp);
