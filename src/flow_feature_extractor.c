@@ -1,8 +1,4 @@
-#include <stdio.h>
 #include <pcap.h>
-#include "nids_backend.h"
-#include <stdbool.h>
-#include <stdlib.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -10,26 +6,14 @@
 #include <string.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
-#include <stdbool.h>
+#include <math.h>
 
-#define IDLE_THRESHOLD 1000000
-#define BULK_THRESHOLD 512
-#define EXPIRE_THRESHOLD 120000000
-#define SUBFLOW_THRESHOLD 15000000
-
-typedef struct flow_entry{
-  flow_stats_t stats;
-  struct flow_entry* next;
-} flow_entry_t;
-
-typedef enum{
-  FWD = 1,
-  BWD = 2
-} flow_direction_t;
-
+#include "nids_backend.h"
+#include "flow_feature_extractor.h"
 
 struct flow_entry** flow_table = NULL;
 static int flow_count = 0;
+static int active_flows = 0;
 static volatile bool running = false;
 
 int packets_processed;
@@ -37,22 +21,24 @@ pthread_t flow_manager_thread;
 pthread_mutex_t flow_mutex = PTHREAD_MUTEX_INITIALIZER;
 int flow_hashmap_size;
 
-void process_packet(uint8_t* data, size_t len, uint64_t time_microseconds);
 void* flow_manager_thread_func(void* arg);
-u_int32_t hash_key(flow_key_t* key);
-flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash);
-flow_key_t* get_flow_key(const u_char* pkt_data, size_t len);
-flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, size_t len, uint64_t time_microseconds);
-flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, size_t len, uint64_t time_microseconds);
-
-void compute_cumulative_features(flow_stats_t* flow);
 void update_flow_time_features(flow_stats_t* flow, time_t ts); 
-bool update_all_flows();
+inline void update_mean_std(uint64_t *count, double *mean, double *M2, double new_value);
 
-uint8_t get_tcp_flags(u_char* data, size_t len);
-uint32_t get_header_len(u_char* data, size_t len);
-uint32_t get_tcp_window_size(u_char* data, size_t len);
-flow_direction_t get_packet_direction(flow_stats_t* flow, flow_key_t* key);
+#define mean(sum, count) \
+    ((sizeof(sum) == sizeof(uint64_t)) ? mean_uint64((sum), (count)) : \
+     (sizeof(sum) == sizeof(uint32_t)) ? mean_uint32((sum), (count)) : \
+     mean_uint64((sum), (count)))
+
+double mean_uint64(uint64_t sum, size_t count) {
+    if (count == 0) return 0.0;  /* Avoid division by zero */
+    return (double)sum / count;
+}
+
+double mean_uint32(uint32_t sum, size_t count) {
+    if (count == 0) return 0.0;  /* Avoid division by zero */
+    return (double)sum / count;
+}
 
 /* Inicializa el hilo para extraer las caracteristicas de los flujos y asigna espacio en memoria para el hashmap */
 bool initialize_feature_extractor(nids_config_t* session_config){
@@ -61,7 +47,8 @@ bool initialize_feature_extractor(nids_config_t* session_config){
         return false;
   }
     config = session_config;
-    packets_processed = 0;
+    flow_count = 0;
+    active_flows = 0;
     flow_hashmap_size = config->flow_table_init_size;
 
     flow_table = malloc(sizeof(flow_entry_t*) * flow_hashmap_size);
@@ -102,8 +89,10 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
     }
   /* Por ahora vamos a trabajar unicamente con paquetes IP completos, y asegurando que la trama ethernet sea de 14 bytes */
     flow_key_t* flow_key = malloc(sizeof(flow_key_t));
+
     if(!flow_key){
         fprintf(stderr, "(FFEXTR)[get_flow_key]: Failed to allocat memory \n");
+        return NULL;
     }
     memset(flow_key, 0, sizeof(flow_key_t));
   
@@ -218,7 +207,7 @@ void* flow_manager_thread_func(void* arg){
         
         if(update_time >= 5){
             update_all_flows();
-            last_update_time = curr_time; 
+            last_update_time = curr_time;
         }
     }
     return NULL;
@@ -314,12 +303,34 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
   
     memset(&new_entry->stats, 0, sizeof(flow_stats_t));
     memcpy(&new_entry->stats.key, key, sizeof(flow_key_t));
+ 
+
+    new_entry->stats.serv_http = false;
+    new_entry->stats.serv_https = false;
+    new_entry->stats.serv_mqtt = false;
+    new_entry->stats.serv_ssh = false;
+    new_entry->stats.serv_iot_port = false;
+    new_entry->stats.serv_other = false;
+      
+      if((new_entry->stats.key.dst_port == 80) || (new_entry->stats.key.dst_port == 81) || 
+          (new_entry->stats.key.dst_port == 8000) || (new_entry->stats.key.dst_port == 8081)) {
+            new_entry->stats.serv_http = true;
+    } else if(new_entry->stats.key.dst_port == 443){
+        new_entry->stats.serv_https = true;
+    } else if(new_entry->stats.key.dst_port == 1883){
+        new_entry->stats.serv_mqtt = true;
+    } else if(new_entry->stats.key.dst_port == 22){
+        new_entry->stats.serv_ssh = true;
+    } else if((new_entry->stats.key.dst_port >= 8000) && (new_entry->stats.key.dst_port <= 9000)){
+        new_entry->stats.serv_iot_port = true;
+    } else if((new_entry->stats.key.dst_port >= 49152) && (new_entry->stats.key.dst_port <= 65535)){
+        new_entry->stats.serv_other = true;
+    }     
     
-    
-    new_entry->stats.expired = false;
-    new_entry->stats.status = ACTIVE;
+    new_entry->stats.status = FLOW_STATUS_ACTIVE;
+    new_entry->stats.active_counts++;
     new_entry->stats.last_checked_time = time_microseconds;
-    new_entry->stats.close_state = OTHER;
+    new_entry->stats.close_state = CLOSE_STATE_OTHER;
 
     new_entry->stats.dst_ip_fwd = key->dst_ip;
     new_entry->stats.flow_hash = flow_hash;
@@ -327,9 +338,10 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     new_entry->stats.flow_start_time = time_microseconds;
     new_entry->stats.flow_last_time = time_microseconds;
     //printf("DEBUG (FFEXTR)[create_flow] Fow_start_time : %ld\n", new_entry->stats.flow_start_time);
-  
-    new_entry->stats.total_fwd_packets = 1;
-  
+ 
+    new_entry->stats.total_packets = 1;
+    new_entry->stats.total_bytes = len;
+    new_entry->stats.total_fwd_packets = 1; 
     new_entry->stats.total_fwd_bytes = len;
 
     new_entry->stats.fwd_packet_len_min = len;
@@ -367,8 +379,8 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     new_entry->stats.psh_flag_count = (tcp_flags & TH_PUSH) ? 1: 0;
     new_entry->stats.ack_flag_count = (tcp_flags & TH_ACK) ? 1 : 0;
     new_entry->stats.urg_flag_count = (tcp_flags & TH_URG) ? 1 : 0;
-    new_entry->stats.cwr_flag_count = (tcp_flags & 0x80) ? 1 : 0; //0x80 CWR flag not defined by system 
-    new_entry->stats.ece_flag_count = (tcp_flags & 0x40) ? 1 : 0; //0x40 ECE flag not defined either
+    new_entry->stats.cwr_flag_count = (tcp_flags & CWR_FLAG) ? 1 : 0; //0x80 CWR flag not defined by system 
+    new_entry->stats.ece_flag_count = (tcp_flags & ECE_FLAG) ? 1 : 0; //0x40 ECE flag not defined either
   
     new_entry->stats.avg_packet_size = len;
     size_t packet_size = len - header_length;
@@ -376,7 +388,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     new_entry->stats.fwd_segment_size_tot = packet_size;
     new_entry->stats.fwd_seg_size_min = packet_size;
 
-    if(packet_size > BULK_THRESHOLD){
+    if(packet_size >= BULK_THRESHOLD){
         new_entry->stats.count_possible_fwd_bulk_packets = 1;
     }
     uint32_t init_win_bytes = get_tcp_window_size(data,len);
@@ -436,11 +448,12 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
 
     uint64_t iat = time_microseconds - flow->flow_last_time;
     // If packet arrived so late that flow should be considereded expired
-    if(iat == EXPIRE_THRESHOLD){
-        flow->expired = true; // We just expire the flow and return, we dont update any other features
-        flow->status = EXPIRED;
+    if(iat >= EXPIRE_THRESHOLD){
+        flow->status = FLOW_STATUS_EXPIRED;
+        pthread_mutex_unlock(&flow_mutex);
         return flow;
-    } else if(flow->status == CLOSED || flow->status == EXPIRED){ // If flow its closed or expired 
+    } else if(flow->status == FLOW_STATUS_CLOSED || flow->status == FLOW_STATUS_EXPIRED){ // If flow its closed or expired
+        pthread_mutex_unlock(&flow_mutex);
         return flow; // Same
     } else {
         flow->curr_idle_time_tot = 0; // Flow ain't expired or closed -> Reset idle time
@@ -460,8 +473,9 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     flow->last_checked_time = time_microseconds;
     flow->flow_last_time = time_microseconds;
 
-    if(flow->status == ACTIVE){
-        if(iat < IDLE_THRESHOLD){ 
+    if(flow->status == FLOW_STATUS_ACTIVE){
+        if(iat < IDLE_THRESHOLD){
+            update_mean_std(&flow->active_counts, &flow->active_mean, &flow->active_time_M2, cum_time);
             flow->active_time_tot += cum_time;
             flow->curr_active_time_tot += cum_time;
             (flow->curr_active_time_tot < flow->active_min) ? flow->active_min = flow->curr_active_time_tot : (void)0;
@@ -473,14 +487,19 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
             (flow->curr_idle_time_tot > flow->idle_max) ? flow->idle_max = flow->curr_idle_time_tot : (void)0;
         }
     } else { // Flow is IDLE
+        update_mean_std(&flow->idle_counts, &flow->idle_mean, &flow->idle_time_M2, cum_time);
         flow->idle_time_tot += cum_time;
         flow->curr_idle_time_tot += cum_time;
         (flow->curr_idle_time_tot < flow->idle_min) ? flow->idle_min = flow->curr_idle_time_tot : (void)0;
         (flow->curr_idle_time_tot > flow->idle_max) ? flow->idle_max = flow->curr_idle_time_tot : (void)0;
         flow->curr_active_time_tot = 0;
-        flow->status = ACTIVE;
+        flow->status = FLOW_STATUS_ACTIVE;
+        flow->active_counts++;
     } 
- 
+     
+    flow->total_packets++;
+    flow->total_bytes += len;
+
     // Update flow IAT
     flow->flow_iat_total += iat;
     (iat > flow->flow_iat_max) ? flow->flow_iat_max = iat : (void)0;
@@ -499,22 +518,24 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     (tcp_flags & TH_URG) ? flow->urg_flag_count++ : (void)0;
     (tcp_flags & 0x80) ? flow->cwr_flag_count++ : (void)0; // CWR Flag
     (tcp_flags & 0x40) ? flow->ece_flag_count++ : (void)0; // ECE Flag
- 
+    
+    update_mean_std(&flow->total_packets , &flow->flow_iat_mean, &flow->flow_iat_M2, len);
+    update_mean_std(&flow->total_packets, &flow->packet_len_mean, &flow->packet_len_M2, len);
 
     /* FWD AND BACKWARD FLOW FEATURES */
     if(packet_direction == FWD){
         // CLOSING HANDSHAKE STATUS
         if((tcp_flags & TH_FIN)){ // FIN CLI
-            flow->close_state = FIN_CLI;
+            flow->close_state = CLOSE_STATE_FIN_CLI;
         }
         
-        if((tcp_flags & TH_ACK) && flow->close_state == ACK_FIN_SV){ // ACK CLI
-            flow->close_state = ACK_CLI;
-            flow->status = CLOSED;
+        if((tcp_flags & TH_ACK) && flow->close_state == CLOSE_STATE_ACK_FIN_SV){ // ACK CLI
+            flow->close_state = CLOSE_STATE_ACK_CLI;
+            flow->status = FLOW_STATUS_CLOSED;
         }
         
         // NEW SUBFLOW
-        (iat > SUBFLOW_THRESHOLD) ? flow->total_fwd_subflows++ : (void)0;
+        (iat >= SUBFLOW_THRESHOLD) ? flow->total_fwd_subflows++ : (void)0;
       
         flow->total_fwd_packets++;
         flow->total_fwd_bytes += len;
@@ -530,10 +551,11 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     
         (iat < flow->fwd_iat_min) ? flow->fwd_iat_min = iat : (void)0;
         (iat > flow->fwd_iat_max) ? flow->fwd_iat_max = iat : (void)0;
-
+        
 
         (packet_size < flow->fwd_seg_size_min) ? flow->fwd_seg_size_min = packet_size : (void)0;
-        //flow->fwd_segment_size_avg = flow->fwd_segment_size_tot / flow->total_fwd_packets;
+        update_mean_std(&flow->total_fwd_packets, &flow->fwd_packet_len_mean, &flow->fwd_packet_len_M2,len);
+        update_mean_std(&flow->total_fwd_packets, &flow->fwd_iat_mean, &flow->fwd_iat_M2, len);
 
         /* FWD BULK FEATURES */
         if(packet_size >= BULK_THRESHOLD){
@@ -567,8 +589,8 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     else { // Packet direction == BWD
         (flow->bwd_init_win_bytes  != 0 && win_bytes != 0) ? flow->bwd_init_win_bytes = win_bytes : (void)0; // Set up win bytes in bwd dir 
         // TCP CLOSING HANDSHAKE STATUS 
-        if((tcp_flags & TH_ACK) && (tcp_flags & TH_FIN) && flow->close_state == FIN_CLI){
-            flow->close_state = ACK_FIN_SV;
+        if((tcp_flags & TH_ACK) && (tcp_flags & TH_FIN) && flow->close_state == CLOSE_STATE_FIN_CLI){
+            flow->close_state = CLOSE_STATE_ACK_FIN_SV;
         }
 
         (iat > SUBFLOW_THRESHOLD) ? flow->total_bwd_subflows++ : (void)0;
@@ -588,7 +610,8 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
         (iat < flow->bwd_iat_min) ? flow->bwd_iat_min = iat : (void)0;
         (iat > flow->bwd_iat_max) ? flow->bwd_iat_max = iat : (void)0;
          
-        //flow->bwd_segment_size_avg = flow->bwd_segment_size_tot / flow->total_bwd_packets;
+        update_mean_std(&flow->total_bwd_packets, &flow->bwd_packet_len_mean, &flow->bwd_packet_len_M2,len);
+        update_mean_std(&flow->total_bwd_packets, &flow->bwd_iat_mean, &flow->bwd_iat_M2, len);
 
         if(packet_size > BULK_THRESHOLD){
             flow->count_possible_bwd_bulk_packets++;
@@ -616,7 +639,7 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
             flow->count_possible_bwd_bulk_packets = 0;
             flow->bwd_bytes_curr_bulk = 0; // Reset curr bulk to 0
         }
-    } // END IF PACKET DIRECTION BWD 
+    } // END IF PACKET DIRECTION BWD  
     pthread_mutex_unlock(&flow_mutex);
     return flow; 
 }
@@ -628,69 +651,68 @@ void compute_cumulative_features(flow_stats_t* flow){
     
     flow->flow_duration = flow->flow_last_time - flow->flow_start_time;
     
-    flow->fwd_packet_len_mean = mean_uint64(flow->total_fwd_bytes, flow->total_fwd_packets);
+    flow->fwd_packet_len_mean = mean(flow->total_fwd_bytes, flow->total_fwd_packets);
+    flow->bwd_packet_len_mean = mean(flow->total_bwd_bytes, flow->total_bwd_packets);
+    flow->flow_bytes_per_sec = mean((flow->total_fwd_bytes + flow->total_bwd_bytes), flow->flow_duration);
+    flow->flow_packets_per_sec = mean((flow->total_fwd_packets + flow->total_bwd_packets), flow->flow_duration);
+    flow->flow_iat_mean = mean(flow->flow_iat_total, flow->flow_duration);
+    flow->fwd_iat_mean = mean(flow->fwd_iat_total, flow->flow_duration);
+    flow->bwd_iat_mean = mean(flow->bwd_iat_total, flow->flow_duration);
+    flow->fwd_packets_per_sec = mean(flow->total_fwd_packets, flow->flow_duration);
+    flow->bwd_packets_per_sec = mean(flow->total_bwd_packets, flow->flow_duration);
+    flow->packet_len_mean = mean((flow->total_fwd_bytes + flow->total_bwd_bytes), (flow->total_fwd_packets + flow->total_bwd_packets));
+    flow->down_up_ratio = mean(flow->total_bwd_bytes, flow->total_fwd_bytes);
+    flow->avg_packet_size = mean((flow->fwd_segment_size_tot + flow->bwd_segment_size_tot), (flow->total_fwd_packets + flow->total_bwd_packets));
+    flow->fwd_segment_size_avg = mean(flow->fwd_segment_size_tot, flow->total_fwd_packets);
+    flow->bwd_segment_size_avg = mean(flow->bwd_segment_size_tot, flow->total_bwd_packets);
+     
+    double fwd_bulk_avg = mean(flow->fwd_bytes_bulk_tot, flow->fwd_bulk_duration);
+    flow->fwd_bulk_rate_avg = mean(fwd_bulk_avg, flow->num_fwd_bulk_transmissions);
+    flow->fwd_packet_bulk_avg = mean(flow->fwd_bytes_bulk_tot, flow->num_fwd_bulk_transmissions);
+    flow->fwd_bytes_bulk_avg = mean(flow->fwd_bytes_bulk_tot, flow->num_fwd_bulk_transmissions);
+ 
+    double bwd_bulk_avg = mean(flow->bwd_bytes_bulk_tot, flow->bwd_bulk_duration);
+    flow->bwd_bulk_rate_avg = mean(bwd_bulk_avg, flow->num_bwd_bulk_transmissions);
+    flow->bwd_packet_bulk_avg = mean(flow->bwd_bytes_bulk_tot, flow->num_bwd_bulk_transmissions);
+    flow->bwd_bytes_bulk_avg = mean(flow->bwd_bytes_bulk_tot, flow->num_bwd_bulk_transmissions);
 
-    if(flow->total_fwd_subflows > 0){
-        flow->subflow_fwd_packets = flow->total_fwd_packets / flow->total_fwd_subflows;
-        flow->subflow_fwd_bytes = flow->total_fwd_bytes / flow->total_fwd_subflows;
-    }   
+    flow->subflow_fwd_packets = mean(flow->total_fwd_packets, flow->total_fwd_subflows);
+    flow->subflow_fwd_bytes = mean(flow->total_fwd_bytes, flow->total_fwd_subflows);
+    flow->active_mean = mean(flow->active_time_tot, flow->active_counts);
+    flow->idle_mean = mean(flow->idle_time_tot, flow->idle_counts);
 
-    flow->fwd_bytes_bulk_avg = flow->fwd_bytes_bulk_tot / flow->num_fwd_bulk_transmissions;
-    flow->fwd_packet_bulk_avg = flow->fwd_packet_bulk_tot / flow->num_fwd_bulk_transmissions;
-
-    if(flow->fwd_bulk_duration != 0){
-        flow->fwd_bulk_rate_avg = (flow->fwd_bytes_bulk_tot / flow->fwd_bulk_duration) 
-                                   / flow->num_fwd_bulk_transmissions;
-    }
-
-    flow->bwd_bytes_bulk_avg = flow->bwd_bytes_bulk_tot / flow->num_bwd_bulk_transmissions;
-    flow->bwd_packet_bulk_avg = flow->bwd_packet_bulk_tot / flow->num_bwd_bulk_transmissions;
-
-    if(flow->bwd_bulk_duration != 0){
-    flow->bwd_bulk_rate_avg = (flow->bwd_bytes_bulk_tot / flow->bwd_bulk_duration) 
-                             / flow->num_bwd_bulk_transmissions;
-    }
-
-    flow->flow_bytes_per_sec = (flow->total_fwd_bytes + flow->total_bwd_bytes) / (flow->flow_duration);
-    flow->flow_packets_per_sec = (flow->total_fwd_packets + flow->total_bwd_packets) / (flow->flow_duration);
-
-    if(flow->total_bwd_bytes > 0){
-        flow->down_up_ratio = flow->total_bwd_bytes / flow->total_fwd_bytes;
-    } else {
-        flow->down_up_ratio = 0;
-    }
-
-    flow->avg_packet_size = (flow->total_fwd_bytes + flow->total_bwd_bytes) / 
-                            (flow->total_fwd_packets + flow->total_bwd_packets); 
-}
-
-double mean_uint64(const uint64_t sum, size_t count){
-    if(count == 0){
-        return 0.0;
-    }
-    return (double)(sum / count);
-}
-double mean_uint32(const uint32_t sum, size_t count){
-    if(count == 0){
-        return 0.0;
-    }
-    uint64_t sum = 0;
+    flow->fwd_packet_len_std = compute_std(flow->fwd_packet_len_M2, flow->total_fwd_packets);
+    flow->bwd_packet_len_std = compute_std(flow->bwd_packet_len_M2, flow->total_bwd_packets);
+    flow->packet_len_std = compute_std(flow->packet_len_M2, flow->total_packets);
     
+    // For IAT values, we need at least 3 packets to have 2 intervals
+    flow->flow_iat_std = (flow->total_packets > 2) ? 
+        compute_std(flow->flow_iat_M2, flow->total_packets - 1) : 0.0;
+    
+    flow->fwd_iat_std = (flow->total_fwd_packets > 2) ? 
+        compute_std(flow->fwd_iat_M2, flow->total_fwd_packets - 1) : 0.0;
+    
+    flow->bwd_iat_std = (flow->total_bwd_packets > 2) ? 
+        compute_std(flow->bwd_iat_M2, flow->total_bwd_packets - 1) : 0.0;
+    
+    flow->active_std = compute_std(flow->active_time_M2, flow->active_counts);
+    flow->idle_std = compute_std(flow->idle_time_M2, flow->idle_counts);
 }
+
 
 void update_flow_time_features(flow_stats_t *flow, time_t ts){
     if((ts - flow->flow_last_time) >= EXPIRE_THRESHOLD){
-        flow->status = EXPIRED;
-        flow->expired = true;
+        flow->status = FLOW_STATUS_EXPIRED;
     }
-    if((ts - flow->flow_last_time) >= IDLE_THRESHOLD){
-        flow->status = IDLE;
+    if((ts - flow->flow_last_time) >= IDLE_THRESHOLD && flow->status == FLOW_STATUS_ACTIVE){
+        flow->status = FLOW_STATUS_IDLE;
+        flow->idle_counts++;
         flow->curr_active_time_tot = 0;
     }
-    if(flow->status == ACTIVE){
+    if(flow->status == FLOW_STATUS_ACTIVE){
         flow->active_time_tot += ts - flow->last_checked_time;
         flow->curr_active_time_tot += ts - flow->last_checked_time;
-    } else if(flow->status == IDLE){
+    } else if(flow->status == FLOW_STATUS_IDLE){
         flow->idle_time_tot += ts - flow->last_checked_time;
         flow->curr_idle_time_tot += ts - flow->last_checked_time;
     }
@@ -705,17 +727,42 @@ bool update_all_flows(){
         flow_entry_t* current = flow_table[i]; 
         flow_entry_t* prev = NULL;
         while(current != NULL){
-            if(current->stats.expired || current->stats.status == CLOSED){
+            
+            if(current->stats.status == FLOW_STATUS_EXPIRED || current->stats.status == FLOW_STATUS_CLOSED){
                 compute_cumulative_features(&current->stats);
-                classify_flow()  
-                current = current->next;
+                int prediction = classify_flow(current->stats);
+                remove_flow(&current, &prev, i);
+                
                 continue;
+            } else{
+                update_flow_time_features(&current->stats, current_time);
+                prev = current;
             }
-            update_flow_time_features(&current->stats, current_time);  
             current = current->next;
         }
     }
     pthread_mutex_unlock(&flow_mutex);
+    return true;
+}
+
+
+bool remove_flow(flow_entry_t** curr, flow_entry_t** prev, int hash_index){
+    if (!curr || !*curr) {
+        fprintf(stderr, "ERROR (FFEXTR)[remove_flow]: NULL flow entry pointer\n");
+        return false;
+    }
+
+    flow_entry_t* to_remove = *curr;
+
+    if(*prev == NULL){
+        flow_table[hash_index] = to_remove->next;
+    } else{
+        (*prev)->next = to_remove->next;
+    }
+    
+    *curr = to_remove->next;
+    free(to_remove);
+    active_flows--;
     return true;
 }
 
@@ -868,4 +915,32 @@ flow_direction_t get_packet_direction(flow_stats_t* flow, flow_key_t* key){
   } else{
     return BWD;
   }
+}
+
+/* UPDATE MEAN AND STD USING WELLFORD'S ONLINE ALGORITHM */ 
+inline void update_mean_std(uint64_t *count, double *mean, double *M2, double new_value){
+    (*count)++;
+    
+    double delta = new_value - *mean;
+    *mean += delta / (*count);
+
+    double delta2 = new_value - *mean;
+    *M2 += delta * delta2;
+}
+
+double compute_std(double M2, size_t count) {
+    if (count <= 1) {
+        return 0.0;  // Need at least 2 values for sample standard deviation
+    }
+    
+    // Use count-1 for sample standard deviation (Bessel's correction)
+    return sqrt(M2 / (count - 1));
+}
+
+int get_flow_count(void){
+    return flow_count; 
+}
+
+int get_packets_processed(void){
+    return packets_processed;
 }
