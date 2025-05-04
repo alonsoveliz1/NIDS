@@ -1,0 +1,112 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-Wall",
+      "-Wextra",
+      "-O2",
+      "-g",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ilib/onnxruntime/include",
+      "-Isrc",
+      "-c",
+      "-o",
+      "obj/flow_analyser.o",
+      "src/flow_analyser.c"
+    ],
+    "directory": "/home/ubuntuvg/Escritorio/NIDS",
+    "file": "/home/ubuntuvg/Escritorio/NIDS/src/flow_analyser.c",
+    "output": "/home/ubuntuvg/Escritorio/NIDS/obj/flow_analyser.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-Wall",
+      "-Wextra",
+      "-O2",
+      "-g",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ilib/onnxruntime/include",
+      "-Isrc",
+      "-c",
+      "-o",
+      "obj/flow_feature_extractor.o",
+      "src/flow_feature_extractor.c"
+    ],
+    "directory": "/home/ubuntuvg/Escritorio/NIDS",
+    "file": "/home/ubuntuvg/Escritorio/NIDS/src/flow_feature_extractor.c",
+    "output": "/home/ubuntuvg/Escritorio/NIDS/obj/flow_feature_extractor.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-Wall",
+      "-Wextra",
+      "-O2",
+      "-g",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ilib/onnxruntime/include",
+      "-Isrc",
+      "-c",
+      "-o",
+      "obj/nids_main.o",
+      "src/nids_main.c"
+    ],
+    "directory": "/home/ubuntuvg/Escritorio/NIDS",
+    "file": "/home/ubuntuvg/Escritorio/NIDS/src/nids_main.c",
+    "output": "/home/ubuntuvg/Escritorio/NIDS/obj/nids_main.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-Wall",
+      "-Wextra",
+      "-O2",
+      "-g",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ilib/onnxruntime/include",
+      "-Isrc",
+      "-c",
+      "-o",
+      "obj/packet_queue.o",
+      "src/packet_queue.c"
+    ],
+    "directory": "/home/ubuntuvg/Escritorio/NIDS",
+    "file": "/home/ubuntuvg/Escritorio/NIDS/src/packet_queue.c",
+    "output": "/home/ubuntuvg/Escritorio/NIDS/obj/packet_queue.o"
+  },
+  {
+    "arguments": [
+      "/usr/bin/gcc",
+      "-Wall",
+      "-Wextra",
+      "-O2",
+      "-g",
+      "-std=c11",
+      "-D_GNU_SOURCE",
+      "-Iinclude",
+      "-I/usr/local/include",
+      "-Ilib/onnxruntime/include",
+      "-Isrc",
+      "-c",
+      "-o",
+      "obj/sniffer.o",
+      "src/sniffer.c"
+    ],
+    "directory": "/home/ubuntuvg/Escritorio/NIDS",
+    "file": "/home/ubuntuvg/Escritorio/NIDS/src/sniffer.c",
+    "output": "/home/ubuntuvg/Escritorio/NIDS/obj/sniffer.o"
+  }
+]
