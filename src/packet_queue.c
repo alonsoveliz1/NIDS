@@ -1,12 +1,9 @@
-#include <stdio.h>
-#include <stdbool.h>
 #include "nids_backend.h"
-#include <stdlib.h>
 #include <pthread.h>
 #include <string.h>
 packet_queue_t packet_queue;
 
-bool init_packet_queue(void){
+bool init_packet_queue(){
   packet_queue.head = 0;
   packet_queue.tail = 0;
   packet_queue.count = 0;

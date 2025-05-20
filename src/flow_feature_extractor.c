@@ -21,7 +21,7 @@ pthread_t flow_manager_thread;
 pthread_mutex_t flow_mutex = PTHREAD_MUTEX_INITIALIZER;
 int flow_hashmap_size;
 
-void* flow_manager_thread_func(void* arg);
+void* flow_manager_thread_func();
 void update_flow_time_features(flow_stats_t* flow, time_t ts); 
 inline void update_mean_std(uint64_t *count, double *mean, double *M2, double new_value);
 
@@ -41,12 +41,7 @@ double mean_uint32(uint32_t sum, size_t count) {
 }
 
 /* Inicializa el hilo para extraer las caracteristicas de los flujos y asigna espacio en memoria para el hashmap */
-bool initialize_feature_extractor(nids_config_t* session_config){
-    if(!session_config){
-        fprintf(stderr, "ERROR (FFEXTR)[init_ffextr]: Null session_config ptr");
-        return false;
-  }
-    config = session_config;
+bool initialize_feature_extractor(){
     flow_count = 0;
     active_flows = 0;
     flow_hashmap_size = config->flow_table_init_size;
@@ -164,8 +159,8 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
     // printf("DEBUG (FFEXTR)[get_flow_key] PROTOCOL: %u \n", flow_key->protocol);
     printf("DEBUG (FFEXTR)[get_flow_key] SRC_PORT: %u \n", flow_key->src_port);
     printf("DEBUG (FFEXTR)[get_flow_key] DST_PORT: %u \n", flow_key->dst_port);
-
-   return flow_key;
+   
+    return flow_key;
   }
 
 void stop_flow_manager(void){
@@ -179,7 +174,7 @@ void stop_flow_manager(void){
   }
 
 
-void* flow_manager_thread_func(void* arg){
+void* flow_manager_thread_func(){
     packet_info_t packet;
 
     printf("DEBUG (FFEXTR)[flow_manager_thread_func]: Inside flow_manager_thread_func\n");
@@ -401,6 +396,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     flow_table[flow_hash] = new_entry;
   
     flow_count++;
+    active_flows++;
     printf("DEBUG (FFEXTR)[create_flow] Num flows: %d\n", flow_count);
 
     pthread_mutex_unlock(&flow_mutex);
@@ -560,7 +556,7 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
         /* FWD BULK FEATURES */
         if(packet_size >= BULK_THRESHOLD){
             flow->count_possible_fwd_bulk_packets++;
-            if(flow->count_possible_fwd_bulk_packets >= 3){
+            if(flow->count_possible_fwd_bulk_packets >= 4){
                 if(flow->in_fwd_bulk_transmission == false){ // BULK START WITH THIS PACKET
                     flow->in_fwd_bulk_transmission = true;
                     flow->num_fwd_bulk_transmissions++;
@@ -730,8 +726,9 @@ bool update_all_flows(){
             
             if(current->stats.status == FLOW_STATUS_EXPIRED || current->stats.status == FLOW_STATUS_CLOSED){
                 compute_cumulative_features(&current->stats);
-                int prediction = classify_flow(current->stats);
+                int prediction = classify_flow(&current->stats);
                 remove_flow(&current, &prev, i);
+                active_flows--;
                 
                 continue;
             } else{

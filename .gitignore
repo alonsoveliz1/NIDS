@@ -3,4 +3,17 @@ obj/
 bin/
 xgboost_model.onnx
 .cache/
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+cmake_install.cmake 
+Makefile
+compile_commands.json
 
+
+*.o 
+*.o.d
+*.out
+*.exe
+*.csv
+*.log

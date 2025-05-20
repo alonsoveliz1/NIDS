@@ -1,19 +1,34 @@
-#include <stdio.h>
 #include <json-c/json.h>
 #include "nids_backend.h"
-#include <stdbool.h>
 #include <string.h>
 #include <getopt.h>
-#include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
 
 nids_config_t* config = NULL;
 static volatile bool running = false;
 
-static bool load_config(const char* config_path);
+/**
+ * Load configuration from the .json config file
+ *
+ * @param config_path: path to the config.json file
+ */
+bool load_config(const char* config_path);
+
+/**
+ * Signal handler to stop the backend on SIGINT and SIGTERM
+ *
+ * @param sig: Signal code
+ */
 static void signal_handler(int sig);
+
+/**
+ * Shutdown orchestrator of all the clean_all_processes
+ */
 static void clean_all_processes(void);
+
+
+
 int main(int argc, char* argv[]){
 
   config = malloc(sizeof(nids_config_t));
@@ -21,6 +36,7 @@ int main(int argc, char* argv[]){
     fprintf(stderr, "Failed to allocate memory for config\n");
     return 1;
   }
+
   /* Default configuration values */
   config->interface_name = "eth0";
   config->bufsize = 65535; // MAX VALUE FOR TCP PACKETS
@@ -45,6 +61,8 @@ int main(int argc, char* argv[]){
       case 'c':
         config_path = optarg;
         break;
+      case 'm':
+        strcpy(config->model_path, optarg);
     }
   }
 
@@ -58,21 +76,31 @@ int main(int argc, char* argv[]){
       printf("Configuration propertly loaded from %s\n", config_path);
     }
   } else {
-    printf("Config path is not introducing, using default configuration\n");
+      printf("Config path is not introducing, using default configuration\n");
   }
   printf("My PID is: %d\n", getpid());
 
   signal(SIGINT, signal_handler);
   signal(SIGTERM, signal_handler);
   
-  if(!initialize_sniffer(config)){
+  if(!init_packet_queue()){
+    fprintf(stderr, "Failed to initialize the queue mutex\n");
+    return 1;
+  }
+
+  if(!initialize_sniffer()){
     printf("Failed to initialize the packet sniffer module\n");
     return 1;
   }
   
-  if(!initialize_feature_extractor(config)){
+  if(!initialize_feature_extractor()){
     printf("Failed to initialize the flow feature extractor module\n");
     return 1;
+  }
+  
+  if(!initialize_model()){
+      fprintf(stderr, "Failed to start the model");
+      return 1;
   }
 
   running = true;
@@ -87,12 +115,6 @@ int main(int argc, char* argv[]){
     return 1;
   }
 
-  if(!init_model(config->model_path)){
-    fprintf(stderr, "Failed to start the model");
-    return 1;
-  }
-
-  // Tengo que hacer que pare cuando el usuario haga ctr+c no poner a dormir esto y que pare cuando deje de dormir
   while(running){
     sleep(1);
   }
@@ -104,7 +126,7 @@ int main(int argc, char* argv[]){
 }
 
 
-static bool load_config(const char* config_path){
+bool load_config(const char* config_path){
   struct json_object* json_config = json_object_from_file(config_path);
 
   if(!json_config){
@@ -117,6 +139,7 @@ static bool load_config(const char* config_path){
 
   if(json_object_object_get_ex(json_config,"interface", &obj)){
     config->interface_name = strdup(json_object_get_string(obj));
+    config->interface_name_dynamic = true;
     printf("Interface name %s\n", config->interface_name);
   }
   
@@ -132,6 +155,7 @@ static bool load_config(const char* config_path){
 
   if(json_object_object_get_ex(json_config, "model_path", &obj)){
     config->model_path = strdup(json_object_get_string(obj));
+    config->model_path_dynamic = true;
     printf("Model_path %s\n", config->model_path);
   }
 
@@ -148,13 +172,19 @@ static void signal_handler(int sig){
 static void clean_all_processes(){
   running = false;
   printf("MAIN: clean_all_processes method\n");
+
+  stop_sniffer();
+  stop_flow_manager();
+  stop_model();
+
   if(config != NULL){
-    free(config->interface_name);
+
+    if(config->interface_name != NULL && config->interface_name_dynamic) free(config->interface_name);
+    if(config->model_path != NULL && config->model_path_dynamic) free(config->model_path);
     free(config);
     config = NULL;
   }
-  stop_sniffer();
-  stop_flow_manager();
+  //cleanup_flow_manager();
   //stop_model();
   //frontend 
 }
