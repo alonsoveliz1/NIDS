@@ -20,6 +20,6 @@ Written in C, it captures packets, extracts features trying to mimic **CIC-FlowM
 2. **Flow Aggregation** — Groups packets into bidirectional flows.
 3. **Feature Extraction** — Computes statistical features per flow (duration, packet size, flags, etc.).
 4. **Classification** — Runs flow features through a pre-trained `XGBoost` model with ONNX.
-5. **Output** — Labels each flow and optionally saves to `.csv`.
+5. **Output** — Labels each flow.
 
 ---
