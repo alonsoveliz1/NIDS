@@ -28,7 +28,12 @@ set (NIDS_CORE_SRC
     src/packet_queue.c
     src/sniffer.c
     src/config.c
+    src/log.c
 )
+
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../../lib/onnxruntime/lib")
+set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+
 
 add_library (nids_core STATIC ${NIDS_CORE_SRC})
 target_include_directories (nids_core
