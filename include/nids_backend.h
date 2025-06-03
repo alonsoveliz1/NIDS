@@ -3,7 +3,7 @@
 #define NIDS_VERSION "1.0.0"
 
 
-#define FEATURE_L1_COUNT 37
+#define FEATURE_L1_COUNT 65
 
 #include <stdio.h>
 #include <stdbool.h>
@@ -11,6 +11,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
+#include <signal.h>
+#include <log.h>
+
+extern volatile sig_atomic_t running;
 
 typedef struct{
   char*   interface_name;
@@ -46,6 +50,8 @@ typedef enum{
   CLOSE_STATE_ACK_CLI                // Client ACK, end of closing handshake
 } flow_close_state_t;
 
+#define NIDS_OK           0
+#define NIDS_ERROR       -1
 
 /* Here will go all the features my model needs to class¡fy */
 typedef struct{
@@ -54,7 +60,6 @@ typedef struct{
     flow_status_t      status;       // Flow [active, idle, closed, expired]
     flow_close_state_t close_state;  // TCP Closing handshake [non-closing, fin-cli, ack_fin_sv, ack_cli] 
 
-    uint32_t  dst_ip_fwd;             // Feature to check if flow is fwd or bwd
     uint32_t  flow_hash;              // Hash of the flow key
     
     // Flow duration
@@ -217,13 +222,21 @@ typedef struct{
     double   idle_std;               // Std dev of time flow was idle before becoming active
     double   idle_time_M2;           // Variance accumulator
 
-    bool serv_http;                  // HTTP Service (port 80, 81, 8000, 8081)
-    bool serv_https;                 // HTTPS Service (port 443)
-    bool serv_mqtt;                  // MQTT Service (port 1883)
-    bool serv_other;                 // Other service (rest of the ports)
-    bool serv_iot_port;              // IoT Service (ports 8000-9000)
-    bool serv_ephimeral;             // Ephemeral port (49152-65535)
-    bool serv_ssh;                   // SSH service (port 22) 
+    bool serv_ssh;              // 22  – SSH
+    bool serv_telnet;           // 23  – Telnet
+    bool serv_http;             // 80, 81, 8000 – HTTP
+    bool serv_https;            // 443 – HTTPS
+    bool serv_rtsp;             // 554 – RTSP
+    bool serv_mqtt;             // 1883 – MQTT
+    bool serv_http_alt;         // 8080 – HTTP (alternate)
+    bool serv_remote_shell;     // 4321 – RemoteShell / custom app
+    bool serv_custom_service;   // 3333 – CustomService / IRC-Alt
+    bool serv_irc;              // 6668 – IRC
+    bool serv_unknown_app;      // 9197 – UnknownApp
+    bool serv_iot_gateway;      // 10002 – IoT-Gateway
+    bool serv_other;
+    bool serv_ephimeral;
+    bool serv_common_iot;
 
     time_t classification_time;
     bool classified;                 // Flow has been classified
@@ -238,7 +251,7 @@ typedef struct {
   uint64_t time_microseconds;
 } packet_info_t;
 
-#define PACKET_QUEUE_SIZE 10
+#define PACKET_QUEUE_SIZE 100
 
 typedef struct{
   packet_info_t packets[PACKET_QUEUE_SIZE];
@@ -260,21 +273,23 @@ typedef struct{
 /**
  * Caller function to open the config pcapture interface and set bpf capture filter to tcp-ip
  *
- * @return true if interface opened successfully false otherwise 
+ * @return NIDS_OK if interface opened successfully NIDS_ERROR otherwise 
  */
-bool initialize_sniffer();
+int init_sniffer();
 
 /**
  * Caller function to start sniffer thread with its function
  *
- * @return true if created successfully false otherwise
+ * @return NIDS_OK if created successfully NIDS_ERROR otherwise
  */
-bool start_sniffer();
+int start_sniffer();
 
 /** 
- * Caller function to stop the sniffer thread 
+ * Caller function to stop the sniffer thread
+ *
+ * @return NIDS_OK on success, NIDS_ERROR otherwise
  */
-void stop_sniffer();
+int stop_sniffer();
 
 /*******************************************************                                                     
  *               FLOW_FEATURE_EXTRACTOR.c              *                                       
@@ -287,20 +302,21 @@ void stop_sniffer();
  * 
  * @return true if initialization successful, false otherwise
  */
-bool initialize_feature_extractor();
+int init_feature_extractor();
 
 /**
  * Start the flow manager thread
  * 
  * @return true if thread started successfully, false otherwise
  */
-bool start_flow_manager();
+int start_flow_manager();
 
 /**
  * Stop the flow manager thread and clean up resources
  */
 void stop_flow_manager(void);
 
+int cleanup_flow_table();
 
 /*******************************************************                                                     
  *                    FLOW_ANALYSER.c                  *                                       
@@ -310,9 +326,9 @@ void stop_flow_manager(void);
 /**
  * Caller function to initialize the ONNX Runtime model
  *
- * @return true in case model started successfully false otherwise
+ * @return NIDS_OK in case model started successfully NIDS_ERROR otherwise
  */
-bool initialize_model();
+int init_model();
 
 /**
  * Classify flow (benign, malicious) with the ONNX model
@@ -345,12 +361,40 @@ bool stop_model();
  *******************************************************/
 
 /**
- * Initialize packet queue mutex, not empty & not full conds 
+ * Initialize packet queue params,  mutex, not empty & not full conds 
  *
- * @return true if done properly false otherwise 
+ * @return NIDS_OK if done properly NIDS_ERROR otherwise 
  */
-bool init_packet_queue();
+int init_packet_queue();
 
-bool enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp);
-bool dequeue_packet(packet_info_t* packet);
+/**
+ * Enqueues a packet given from pcap_loop to the head of the queue 
+ *
+ * @params pkt_data, data to be stored in the queue, len and timestamp 
+ * @return NIDS_OK on success, false otherwise
+ */
+int enqueue_packet(const u_char* pkt_data, size_t len, struct timeval timestamp);
+
+/**
+ * Dequeues a packet and gives it to the caller, which is responsible of freeing it 
+ *
+ * @params packet structure to be filled so its given to the caller 
+ * @return NIDS_OK if dequeued succesfully, false otherwise 
+ */
+int dequeue_packet(packet_info_t* packet);
+
+/*
+ * Shutdown packet queue to wake up any threads waiting on a mutex condition
+ *
+ */
+void shutdown_packet_queue();
+
+/*
+ * Frees packet queue memory for each entry, then turns pointer to data to NULL 
+ *
+ * @return NIDS_OK if cleanup successfully NIDS_ERROR otherwise 
+ */
+int clean_packet_queue(void);
+
+
 #endif /*NIDS_BACKEND_H */
