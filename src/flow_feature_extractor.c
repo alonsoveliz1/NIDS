@@ -11,107 +11,172 @@
 #include "nids_backend.h"
 #include "flow_feature_extractor.h"
 
-struct flow_entry** flow_table = NULL;
-static int flow_count = 0;
-static int active_flows = 0;
-static volatile bool running = false;
+
+static volatile bool ffextr_running = false;
 
 int packets_processed;
+int flow_count;
+int active_flows;
+
 pthread_t flow_manager_thread;
-pthread_mutex_t flow_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct flow_entry** flow_table = NULL;
 int flow_hashmap_size;
+pthread_mutex_t flow_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void* flow_manager_thread_func();
 void update_flow_time_features(flow_stats_t* flow, time_t ts); 
 inline void update_mean_std(uint64_t *count, double *mean, double *M2, double new_value);
+static void update_flags(flow_stats_t *flow, uint8_t tcp_flags);
+static void init_service_flag(flow_stats_t *stats); 
+static bool flow_keys_match(flow_key_t *key, flow_key_t *key2);
 
-#define mean(sum, count) \
-    ((sizeof(sum) == sizeof(uint64_t)) ? mean_uint64((sum), (count)) : \
-     (sizeof(sum) == sizeof(uint32_t)) ? mean_uint32((sum), (count)) : \
-     mean_uint64((sum), (count)))
+// Helper macros
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define UPDATE_MIN(var, val) ((val) < (var) ? (var) = (val) : (void)0)
+#define UPDATE_MAX(var, val) ((val) > (var) ? (var) = (val) : (void)0)
 
-double mean_uint64(uint64_t sum, size_t count) {
-    if (count == 0) return 0.0;  /* Avoid division by zero */
-    return (double)sum / count;
+// Helper functions
+static double mean(uint64_t sum, size_t count){
+    return count == 0 ? 0 : (double)sum/count;
 }
 
-double mean_uint32(uint32_t sum, size_t count) {
-    if (count == 0) return 0.0;  /* Avoid division by zero */
-    return (double)sum / count;
-}
-
-/* Inicializa el hilo para extraer las caracteristicas de los flujos y asigna espacio en memoria para el hashmap */
-bool initialize_feature_extractor(){
+int init_feature_extractor(){
     flow_count = 0;
     active_flows = 0;
     flow_hashmap_size = config->flow_table_init_size;
 
-    flow_table = malloc(sizeof(flow_entry_t*) * flow_hashmap_size);
+    flow_table = calloc(flow_hashmap_size, sizeof(flow_entry_t*));
     if(!flow_table){
-        fprintf(stderr, "(FFEXTR)[initialize_feature_extractor]: Failed to allocate flow table");
-        return false;
+        log_error("Failed to allocate the flow table");
+        return NIDS_ERROR;
     }
-
-    for(int i = 0; i < flow_hashmap_size; i++){
-        flow_table[i] = NULL;
-    }
-
-    flow_count = 0;
-    return true; 
+    return NIDS_OK; 
   }
 
+
+
 /* Lanzadera del hilo y asignacion de su funcion flow_manager_thread_func */ 
-  bool start_flow_manager(void){
-    if(running){
-        fprintf(stderr, "(FFEXTR)[start_flow_manager]: Flow manager is already running!\n");
-        return false;
+int start_flow_manager(void){
+    if(ffextr_running){
+        log_warn("Flow manager is already running");
+        return NIDS_ERROR;
     }
 
     if(pthread_create(&flow_manager_thread, NULL, flow_manager_thread_func, NULL) != 0){
-        fprintf(stderr, "(FFEXTR)[start_flow_manager]: Flow manager could not be created properly\n");
-        running = false;
-        return false;
+        log_error("Flow manager thread could not be created succesfully");
+        ffextr_running = false;
+        return NIDS_ERROR;
     }
-    running = true;
-    return true;
+    ffextr_running = true;
+    return NIDS_OK;
+}
+
+
+
+void* flow_manager_thread_func(){
+    packet_info_t packet;
+
+    log_debug("Inside flow manager function");
+
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setname_np(pthread_self(), "flow_manager");
+    
+    time_t last_update_time = time(NULL);
+
+    while(ffextr_running){
+        if(dequeue_packet(&packet) >= 0){
+            process_packet(packet.data, packet.len, packet.time_microseconds);
+            free(packet.data);
+        }
+        
+        time_t curr_time = time(NULL);
+        time_t update_time = curr_time - last_update_time;
+        
+        // Each second I check whether there are flows to be 
+        if(update_time >= 1){
+            update_all_flows();
+            last_update_time = curr_time;
+        }
+    }
+    return NULL;
   }
+
+
+
+void process_packet(uint8_t* data, size_t len, uint64_t time_microseconds){
+    if(!data){
+        log_warn("NULL data ptr received in process packet");
+        return;
+    }
+
+    flow_key_t* key = get_flow_key(data, len);
+    if(!key){
+        log_warn("Flow key couldnt be computed");
+        return;
+    }
+
+    u_int32_t flow_hash = hash_key(key);
+    if(flow_hash == UINT32_MAX){
+        log_warn("Flow hash couldnt be computed properly");
+        return;
+    }
+
+    flow_stats_t* existing_flow = get_flow(key, flow_hash);
+    if(!existing_flow){
+        flow_stats_t* created = create_flow(key, flow_hash, data, len, time_microseconds);
+        if(!created){
+            log_warn("Flow couldnt be created in hashmap");
+            return;
+        }
+        log_debug("Flow %u created", flow_hash);
+    
+    } else {
+        flow_stats_t* updated = update_flow(key, existing_flow, data, len, time_microseconds);
+        if(!updated){
+            log_warn("Flow couldnt be updated");
+            return;
+        } else {
+            log_info("Flow was updated successfully");
+          }
+      }
+    free(key);
+    packets_processed++;
+    if((packets_processed % 1000) == 0){
+        log_debug("Packets processed %d", packets_processed);
+    } 
+  }
+
+
 
 /* Returns a flow_key_t with processed_packet data */
 flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
     if(!pkt_data){
-        fprintf(stderr, "ERROR (FFEXTR)[get_flow_key] NULL pkt_data ptr");
+        log_error("Null pkt_data pointer");
         return NULL;
     }
-  /* Por ahora vamos a trabajar unicamente con paquetes IP completos, y asegurando que la trama ethernet sea de 14 bytes */
-    flow_key_t* flow_key = malloc(sizeof(flow_key_t));
-
-    if(!flow_key){
-        fprintf(stderr, "(FFEXTR)[get_flow_key]: Failed to allocat memory \n");
-        return NULL;
-    }
-    memset(flow_key, 0, sizeof(flow_key_t));
-  
+ 
     if(len < sizeof(struct ether_header)){
-        fprintf(stderr, "(FFEXTR)[get_flow_key]: Packet too short for Ethernet Header\n");
-        free(flow_key);
+        log_warn("Packet too short for Ethernet header");
         return NULL;
     }
 
     struct ether_header* eth_header = (struct ether_header*)pkt_data;
-    // printf("(FFEXTR)[get_flow_key] Ethernet type: 0x%04x\n", ntohs(eth_header->ether_type));
-    printf("(FFEXTR)[get_flow_key] Ethernet header size: %zu bytes\n", sizeof(struct ether_header));
+    log_debug("Ethernet header size: %zu bytes", sizeof(struct ether_header));
+    log_debug("Ethernet type: 0x%04x\n", ntohs(eth_header->ether_type));
 
     if(ntohs(eth_header->ether_type) != ETHERTYPE_IP){
-        fprintf(stderr, "(FFEXTR)[get_flow_key]: Not an IP packet\n");
-        free(flow_key);
+        log_warn("Not an IP packet, can't get the flow_key, discarding packet");
         return NULL;
     }
+
     const u_char* ip_packet = pkt_data + sizeof(struct ether_header);
     size_t remaining_len = len - sizeof(struct ether_header);
 
     if(remaining_len < sizeof(struct ip)){
-        fprintf(stderr, "(FFEXTR)[get_flow_key]: Packet too short for IP header");
-        free(flow_key);
+        log_warn("Packet too short for IP headr, discarding packet");
         return NULL;
     }
 
@@ -119,35 +184,38 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
     unsigned int ip_header_len = ip_header->ip_hl * 4;
   
     if(ip_header->ip_v != 4){
-        fprintf(stderr, "(FFEXTR)[get_flow_key] Not an IPV4 packet\n");
-        free(flow_key);
+        log_warn("Not an IPV4 packet, discarding packet");
         return NULL;
     }
 
     // printf("(FFEXTR)[get_flow_key] IP version: %u\n", ip_header->ip_v);
-    printf("(FFEXTR)[get_flow_key] IP header length: %u bytes\n", ip_header_len);
-    printf("(FFEXTR)[get_flow_key] IP total length: %u bytes\n", ntohs(ip_header->ip_len));
+    log_debug("IP header length: %u bytes\n", ip_header_len);
+    log_debug("IP total length: %u bytes\n", ntohs(ip_header->ip_len));
     // printf("(FFEXTR)[get_flow_key] IP protocol: %u\n", ip_header->ip_p);
 
     if(ip_header_len < 20 || remaining_len < ip_header_len){
-        fprintf(stderr, "(FFEXTR)[get_flow_key]: Invalid IP header length \n");
-        free(flow_key);
+        log_warn("Invalid IP header length, discarding packet");
         return NULL;
     }
+    
+    // Now we're ready to allocate memory, before we were discarding the packet so bullshit
+    flow_key_t* flow_key = calloc(1, sizeof(flow_key_t));
 
+    if(!flow_key){
+        log_error("Failed to allocate memory for the flow_key struct");
+        return NULL;
+    }
     flow_key->src_ip = ntohl(ip_header->ip_src.s_addr);
     flow_key->dst_ip = ntohl(ip_header->ip_dst.s_addr);
     flow_key->protocol = ip_header->ip_p;
 
-    printf("(FFEXTR)[get_flow_key] SRC_IP: %u (%s)\n", flow_key->src_ip, inet_ntoa(ip_header->ip_src));
-    printf("(FFEXTR)[get_flow_key] DST_IP: %u (%s)\n", flow_key->dst_ip, inet_ntoa(ip_header->ip_dst));
 
     if(flow_key->protocol == IPPROTO_TCP){
         const u_char* tcp_packet = ip_packet + ip_header_len;
         remaining_len -= ip_header_len;
 
         if(remaining_len < sizeof(struct tcphdr)){
-            fprintf(stderr, "ERROR (FFEXTR)[get_flow_key]: Packet too short for TCP header");
+            log_warn("Packet too short for TCP header, discarding packet");
             free(flow_key);
             return NULL;
         }
@@ -157,101 +225,39 @@ flow_key_t* get_flow_key(const u_char* pkt_data, size_t len){
         flow_key->dst_port = ntohs(tcp_header->dest);
     }
     // printf("DEBUG (FFEXTR)[get_flow_key] PROTOCOL: %u \n", flow_key->protocol);
-    printf("DEBUG (FFEXTR)[get_flow_key] SRC_PORT: %u \n", flow_key->src_port);
-    printf("DEBUG (FFEXTR)[get_flow_key] DST_PORT: %u \n", flow_key->dst_port);
-   
+    log_debug("Flow key: %s:%u -> %s:%u (proto %u)", inet_ntoa(ip_header->ip_src), flow_key->src_port,
+                inet_ntoa(ip_header->ip_dst), flow_key->dst_port, flow_key->protocol);
+
     return flow_key;
   }
 
+
+
 void stop_flow_manager(void){
-    if(!running){
-        fprintf(stderr, "ERROR (FFEXTR)[stop_flow_manager] Flow manager aint running");
+    if(!ffextr_running){
+        log_warn("Flow manager was already running");
+        return;
     }
 
-    running = false;
-    pthread_cancel(flow_manager_thread);
-    printf("DEBUG (FFEXTR)[stop_flow_manager]: Stopped the flow_manager_thread");
-  }
-
-
-void* flow_manager_thread_func(){
-    packet_info_t packet;
-
-    printf("DEBUG (FFEXTR)[flow_manager_thread_func]: Inside flow_manager_thread_func\n");
-
-    if(pthread_detach(pthread_self()) != 0){
-        fprintf(stderr, "ERROR (FFEXTR)[flow_manager_thread_func]: Wasnt detached successfully\n");
-    }
-
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
-    pthread_setname_np(pthread_self(), "flow_manager");
+    ffextr_running = false;
+    shutdown_packet_queue(); 
+    pthread_join(flow_manager_thread, NULL); // Now thread will not queue and dequeue packets
     
-    time_t last_update_time = time(NULL);
-    time_t last_expire_time = time(NULL);
-
-    while(running){
-        if(dequeue_packet(&packet)){
-            process_packet(packet.data, packet.len, packet.time_microseconds);
-            free(packet.data);
-        }
-        
-        time_t curr_time = time(NULL);
-        time_t update_time = curr_time - last_update_time;
-        time_t expire_time = curr_time - last_expire_time;
-        
-        if(update_time >= 5){
-            update_all_flows();
-            last_update_time = curr_time;
-        }
+    // So we're ready to free
+    if(flow_table){
+        cleanup_flow_table();
+        free(flow_table);
+        flow_table = NULL;
     }
-    return NULL;
+    log_info("Stopped the flow_manager_thread");
   }
 
-void process_packet(uint8_t* data, size_t len, uint64_t time_microseconds){
-    if(!data){
-        fprintf(stderr, "ERROR (FFEXTR)[process_packet] NULL data ptr");
-        return;
-    }
 
-    flow_key_t* key = get_flow_key(data, len);
-    if(!key){
-        printf("ERROR (FFEXTR)[process_packet] Key couldnt be computed \n");
-        return;
-    }
-    u_int32_t flow_hash = hash_key(key);
-    if(flow_hash == UINT32_MAX){
-        fprintf(stderr, "ERROR (FFEXTR)[process_packet] Flow hash couldnt be computed properly \n");
-        return;
-    }
-    flow_stats_t* existing_flow = get_flow(key, flow_hash);
-    if(!existing_flow){
-        flow_stats_t* created = create_flow(key, flow_hash, data, len, time_microseconds);
-        if(!created){
-            fprintf(stderr, "(FFEXTR)[process_packet] Flow couldnt be created\n");
-            return;
-        }
-        printf("Flow %u created\n", flow_hash);
-    } else {
-        flow_stats_t* updated = update_flow(key, existing_flow, data, len, time_microseconds);
-        if(!updated){
-            fprintf(stderr, "(FFEXTR)[process_packet] Flow couldnt be updated\n");
-            return;
-        } else {
-            printf("(FFEXTR)[process_packet] Flow was updated successfully\n");
-          }
-      }
 
-    free(key);
-    packets_processed = packets_processed + 1;
-    printf("(FFEXTR)[process_packet] Packets processed: %d \n", packets_processed);
-  }
-
-/* Por ahora pondre uint32. No puedo shiftear src_port y dst_port una cantidad de bits diferentes, 
- * porque sino los paquetes flow_manager_thread_funcy bwd se interpretarian como flujos distintos */
+// Simple hashing function 
 uint32_t hash_key(flow_key_t* key) {
     if(!key){
-        fprintf(stderr, "ERROR (FFEXTR)[hash_key] NULL key ptr");
+        log_error("Null key pointer received");
         return UINT32_MAX;
     }
     uint32_t hash = 0;
@@ -260,7 +266,7 @@ uint32_t hash_key(flow_key_t* key) {
     uint32_t ip_a, ip_b;
     uint16_t port_a, port_b;
   
-    if (key->src_ip < key->dst_ip || (key->src_ip == key->dst_ip && key->src_port < key->dst_port)) {
+   if (key->src_ip < key->dst_ip || (key->src_ip == key->dst_ip && key->src_port < key->dst_port)) {
         ip_a = key->src_ip;
         ip_b = key->dst_ip;
         port_a = key->src_port;
@@ -270,7 +276,7 @@ uint32_t hash_key(flow_key_t* key) {
         ip_b = key->src_ip;
         port_a = key->dst_port;
         port_b = key->src_port;
-    }
+    } 
   
     hash ^= ip_a;
     hash ^= (ip_b << 1);
@@ -279,59 +285,40 @@ uint32_t hash_key(flow_key_t* key) {
     hash ^= ((uint32_t)key->protocol << 24);
   
     return (hash % flow_hashmap_size);
-  }
+}
+
+
 
 /* Allocates memory for a new_flow entry, sets flow hash as the key to the flow_table and the flow to the head of its bucket of the linked list */
 flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, size_t len, uint64_t time_microseconds){
     if(!key || !data){
-        fprintf(stderr, "ERROR (FFEXTR)[create_flow] NULL key or data ptr");
+        log_error("Null key or data ptr received in create flow");
         return NULL;
     }
     pthread_mutex_lock(&flow_mutex);
   
     flow_entry_t* new_entry = (flow_entry_t*)malloc(sizeof(flow_entry_t));
     if(new_entry == NULL){
-        fprintf(stderr, "ERROR (FFEXTR)[create_flow]: Failed to allocate memory for new flow entry\n");
+        log_error("Failed to allocate memory for new flow entry");
         pthread_mutex_unlock(&flow_mutex);
         return NULL;
     }
   
     memset(&new_entry->stats, 0, sizeof(flow_stats_t));
     memcpy(&new_entry->stats.key, key, sizeof(flow_key_t));
+
+    init_service_flag(&new_entry->stats);
  
-
-    new_entry->stats.serv_http = false;
-    new_entry->stats.serv_https = false;
-    new_entry->stats.serv_mqtt = false;
-    new_entry->stats.serv_ssh = false;
-    new_entry->stats.serv_iot_port = false;
-    new_entry->stats.serv_other = false;
-      
-      if((new_entry->stats.key.dst_port == 80) || (new_entry->stats.key.dst_port == 81) || 
-          (new_entry->stats.key.dst_port == 8000) || (new_entry->stats.key.dst_port == 8081)) {
-            new_entry->stats.serv_http = true;
-    } else if(new_entry->stats.key.dst_port == 443){
-        new_entry->stats.serv_https = true;
-    } else if(new_entry->stats.key.dst_port == 1883){
-        new_entry->stats.serv_mqtt = true;
-    } else if(new_entry->stats.key.dst_port == 22){
-        new_entry->stats.serv_ssh = true;
-    } else if((new_entry->stats.key.dst_port >= 8000) && (new_entry->stats.key.dst_port <= 9000)){
-        new_entry->stats.serv_iot_port = true;
-    } else if((new_entry->stats.key.dst_port >= 49152) && (new_entry->stats.key.dst_port <= 65535)){
-        new_entry->stats.serv_other = true;
-    }     
-    
     new_entry->stats.status = FLOW_STATUS_ACTIVE;
-    new_entry->stats.active_counts++;
-    new_entry->stats.last_checked_time = time_microseconds;
     new_entry->stats.close_state = CLOSE_STATE_OTHER;
+    new_entry->stats.active_counts++;
 
-    new_entry->stats.dst_ip_fwd = key->dst_ip;
-    new_entry->stats.flow_hash = flow_hash;
-  
     new_entry->stats.flow_start_time = time_microseconds;
     new_entry->stats.flow_last_time = time_microseconds;
+    new_entry->stats.last_checked_time = time_microseconds;
+ 
+    new_entry->stats.flow_hash = flow_hash;
+
     //printf("DEBUG (FFEXTR)[create_flow] Fow_start_time : %ld\n", new_entry->stats.flow_start_time);
  
     new_entry->stats.total_packets = 1;
@@ -343,40 +330,28 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     new_entry->stats.fwd_packet_len_max = len;
     new_entry->stats.fwd_packet_len_mean = len;
     new_entry->stats.fwd_packet_len_std = len;
-
     new_entry->stats.bwd_packet_len_min = UINT16_MAX;
 
     new_entry->stats.flow_bytes_per_sec = len;
     new_entry->stats.flow_packets_per_sec = 1;
+    new_entry->stats.fwd_packets_per_sec = 1;
 
     new_entry->stats.flow_iat_min = UINT64_MAX;
-
     new_entry->stats.fwd_iat_min = UINT64_MAX;
-
     new_entry->stats.bwd_iat_min = UINT64_MAX;
 
     uint8_t tcp_flags = get_tcp_flags(data, len);
+    update_flags(&new_entry->stats, tcp_flags);
     new_entry->stats.fwd_psh_flags = (tcp_flags & TH_PUSH) ? 1 : 0;
     new_entry->stats.fwd_urg_flags = (tcp_flags & TH_URG) ? 1 : 0;
 
     uint32_t header_length = get_header_len(data, len);
     new_entry->stats.fwd_header_len = header_length;
 
-    new_entry->stats.fwd_packets_per_sec = 1;
-
     new_entry->stats.packet_len_min = len;
     new_entry->stats.packet_len_max = len;
     new_entry->stats.packet_len_mean = len;
-
-    new_entry->stats.fin_flag_count = (tcp_flags & TH_FIN) ? 1 : 0;
-    new_entry->stats.syn_flag_count = (tcp_flags & TH_SYN) ? 1: 0;
-    new_entry->stats.rst_flag_count = (tcp_flags & TH_RST) ? 1: 0;
-    new_entry->stats.psh_flag_count = (tcp_flags & TH_PUSH) ? 1: 0;
-    new_entry->stats.ack_flag_count = (tcp_flags & TH_ACK) ? 1 : 0;
-    new_entry->stats.urg_flag_count = (tcp_flags & TH_URG) ? 1 : 0;
-    new_entry->stats.cwr_flag_count = (tcp_flags & CWR_FLAG) ? 1 : 0; //0x80 CWR flag not defined by system 
-    new_entry->stats.ece_flag_count = (tcp_flags & ECE_FLAG) ? 1 : 0; //0x40 ECE flag not defined either
-  
+ 
     new_entry->stats.avg_packet_size = len;
     size_t packet_size = len - header_length;
     new_entry->stats.fwd_segment_size_avg = packet_size; // Tamaño segmento = paquete - cabeceras
@@ -386,6 +361,7 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
     if(packet_size >= BULK_THRESHOLD){
         new_entry->stats.count_possible_fwd_bulk_packets = 1;
     }
+
     uint32_t init_win_bytes = get_tcp_window_size(data,len);
     new_entry->stats.fwd_init_win_bytes = init_win_bytes;
     new_entry->stats.fwd_act_data_packets = (packet_size > 1) ? 1 : 0;
@@ -397,11 +373,13 @@ flow_stats_t* create_flow(flow_key_t* key, uint32_t flow_hash, u_char* data, siz
   
     flow_count++;
     active_flows++;
-    printf("DEBUG (FFEXTR)[create_flow] Num flows: %d\n", flow_count);
+    log_debug("Created new flow, active flow count: %d", flow_count);
 
     pthread_mutex_unlock(&flow_mutex);
     return &new_entry->stats;
 }
+
+
 
 flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash){
     if(!key){
@@ -413,26 +391,16 @@ flow_stats_t* get_flow(flow_key_t* key, uint32_t flow_hash){
     flow_entry_t* current_flow = flow_table[flow_hash];
 
     while(current_flow != NULL){
-        if(current_flow->stats.key.src_ip == key->src_ip && current_flow->stats.key.dst_ip == key->dst_ip && 
-            current_flow->stats.key.src_port == key->src_port && current_flow->stats.key.dst_port == key->dst_port &&
-            current_flow->stats.key.protocol == key->protocol) 
-        {
-                pthread_mutex_unlock(&flow_mutex);
-                return &current_flow->stats;
-        }
-
-        if(current_flow->stats.key.src_ip == key->dst_ip && current_flow->stats.key.dst_ip == key->src_ip &&
-            current_flow->stats.key.src_port == key->dst_port && current_flow->stats.key.dst_port == key->src_port && 
-            current_flow->stats.key.protocol == key->protocol)
-        {
-                pthread_mutex_unlock(&flow_mutex);
-                return &current_flow->stats;
-        }
+        if(flow_keys_match(&current_flow->stats.key, key)){
+            pthread_mutex_unlock(&flow_mutex);
+            return &current_flow->stats;
+        } 
         current_flow = current_flow->next;
     }
     pthread_mutex_unlock(&flow_mutex);
     return NULL;
   }
+
 
 
 flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, size_t len, uint64_t time_microseconds){
@@ -470,7 +438,7 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     flow->flow_last_time = time_microseconds;
 
     if(flow->status == FLOW_STATUS_ACTIVE){
-        if(iat < IDLE_THRESHOLD){
+        if(iat < ACTIVITY_TIMEOUT){
             update_mean_std(&flow->active_counts, &flow->active_mean, &flow->active_time_M2, cum_time);
             flow->active_time_tot += cum_time;
             flow->curr_active_time_tot += cum_time;
@@ -506,14 +474,7 @@ flow_stats_t* update_flow(flow_key_t* key, flow_stats_t* flow, u_char* data, siz
     (flow->packet_len_max < len) ? flow->packet_len_max = len : (void)0;
 
     // Update TCP Flags
-    (tcp_flags & TH_FIN) ? flow->fin_flag_count++ : (void)0;
-    (tcp_flags & TH_SYN) ? flow->syn_flag_count++ : (void)0;
-    (tcp_flags & TH_RST) ? flow->rst_flag_count++ : (void)0;
-    (tcp_flags & TH_PUSH) ? flow->psh_flag_count++ : (void)0;
-    (tcp_flags & TH_ACK) ? flow->ack_flag_count++ : (void)0;
-    (tcp_flags & TH_URG) ? flow->urg_flag_count++ : (void)0;
-    (tcp_flags & 0x80) ? flow->cwr_flag_count++ : (void)0; // CWR Flag
-    (tcp_flags & 0x40) ? flow->ece_flag_count++ : (void)0; // ECE Flag
+    update_flags(flow, tcp_flags); 
     
     update_mean_std(&flow->total_packets , &flow->flow_iat_mean, &flow->flow_iat_M2, len);
     update_mean_std(&flow->total_packets, &flow->packet_len_mean, &flow->packet_len_M2, len);
@@ -696,11 +657,27 @@ void compute_cumulative_features(flow_stats_t* flow){
 }
 
 
+static bool flow_keys_match(flow_key_t *a, flow_key_t *b){
+    return a->protocol == b->protocol && (
+           /* same direction */      (a->src_ip   == b->src_ip   &&
+                                      a->dst_ip   == b->dst_ip   &&
+                                      a->src_port == b->src_port &&
+                                      a->dst_port == b->dst_port) ||
+
+           /* reverse direction */   (a->src_ip   == b->dst_ip   &&
+                                      a->dst_ip   == b->src_ip   &&
+                                      a->src_port == b->dst_port &&
+                                      a->dst_port == b->src_port));
+}
+
+
+
 void update_flow_time_features(flow_stats_t *flow, time_t ts){
     if((ts - flow->flow_last_time) >= EXPIRE_THRESHOLD){
         flow->status = FLOW_STATUS_EXPIRED;
     }
-    if((ts - flow->flow_last_time) >= IDLE_THRESHOLD && flow->status == FLOW_STATUS_ACTIVE){
+    if((ts - flow->flow_last_time) >= ACTIVITY_TIMEOUT && flow->status == FLOW_STATUS_ACTIVE){
+
         flow->status = FLOW_STATUS_IDLE;
         flow->idle_counts++;
         flow->curr_active_time_tot = 0;
@@ -724,14 +701,14 @@ bool update_all_flows(){
         flow_entry_t* prev = NULL;
         while(current != NULL){
             
-            if(current->stats.status == FLOW_STATUS_EXPIRED || current->stats.status == FLOW_STATUS_CLOSED){
+            if(current->stats.status == FLOW_STATUS_EXPIRED || current->stats.status == FLOW_STATUS_CLOSED){ // Flow its closed ready to classify
                 compute_cumulative_features(&current->stats);
                 int prediction = classify_flow(&current->stats);
                 remove_flow(&current, &prev, i);
-                active_flows--;
                 
                 continue;
             } else{
+                // Check if flow is expired, idle and update time features
                 update_flow_time_features(&current->stats, current_time);
                 prev = current;
             }
@@ -762,6 +739,32 @@ bool remove_flow(flow_entry_t** curr, flow_entry_t** prev, int hash_index){
     active_flows--;
     return true;
 }
+
+int cleanup_flow_table(){
+    pthread_mutex_lock(&flow_mutex);
+
+    if(!flow_table){
+        log_error("Flow table already cleaned");
+        pthread_mutex_unlock(&flow_mutex);
+        return NIDS_ERROR;
+    }
+
+    for(int i = 0; i < flow_hashmap_size; i++){
+        flow_entry_t *current = flow_table[i];
+        while(current != NULL){
+            flow_entry_t *next = current->next;
+            free(current);
+            current = next;
+      }
+      flow_table[i] = NULL;
+    }
+    active_flows = 0;
+    flow_count = 0;
+    pthread_mutex_unlock(&flow_mutex);
+    return NIDS_OK;
+}
+
+
 
 /* Extract TCP flags from packet data */
 uint8_t get_tcp_flags(u_char* data, size_t len) {
@@ -817,6 +820,92 @@ uint8_t get_tcp_flags(u_char* data, size_t len) {
 
     return flags;
 }
+
+
+static void update_flags(flow_stats_t *flow, uint8_t tcp_flags){
+    if (tcp_flags & TH_FIN) flow->fin_flag_count++;
+    if (tcp_flags & TH_SYN) flow->syn_flag_count++;
+    if (tcp_flags & TH_RST) flow->rst_flag_count++;
+    if (tcp_flags & TH_PUSH) flow->psh_flag_count++;
+    if (tcp_flags & TH_ACK) flow->ack_flag_count++;
+    if (tcp_flags & TH_URG) flow->urg_flag_count++;
+    if (tcp_flags & CWR_FLAG) flow->cwr_flag_count++;
+    if (tcp_flags & ECE_FLAG) flow->ece_flag_count++;
+}
+
+
+static void init_service_flag(flow_stats_t* stats) {
+    uint16_t dst_port = stats->key.dst_port;
+    
+    // Reset all service flags
+    stats->serv_ssh = false;
+    stats->serv_telnet = false;
+    stats->serv_http = false;
+    stats->serv_https = false;
+    stats->serv_rtsp = false;
+    stats->serv_mqtt = false;
+    stats->serv_http_alt = false;
+    stats->serv_remote_shell = false;
+    stats->serv_custom_service = false;
+    stats->serv_irc = false;
+    stats->serv_unknown_app = false;
+    stats->serv_iot_gateway = false;
+    stats->serv_other = false;
+    stats->serv_ephimeral = false;
+    stats->serv_common_iot = false; 
+    // Check specific services
+    switch (dst_port) {
+        case 22:    // SSH
+            stats->serv_ssh = true;
+            break;
+        case 23:    // Telnet
+            stats->serv_telnet = true;
+            break;
+        case 80:    // HTTP
+        case 81:    // HTTP
+        case 8000:  // HTTP
+            stats->serv_http = true;
+            break;
+        case 443:   // HTTPS
+            stats->serv_https = true;
+            break;
+        case 554:   // RTSP
+            stats->serv_rtsp = true;
+            break;
+        case 1883:  // MQTT
+            stats->serv_mqtt = true;
+            break;
+        case 8080:  // HTTP-Alt
+            stats->serv_http_alt = true;
+            break;
+        case 4321:  // RemoteShell/CustomApp
+            stats->serv_remote_shell = true;
+            break;
+        case 3333:  // CustomService/IRC-Alt
+            stats->serv_custom_service = true;
+            break;
+        case 6668:  // IRC
+            stats->serv_irc = true;
+            break;
+        case 9197:  // UnknownApp
+            stats->serv_unknown_app = true;
+            break;
+        case 10002: // IoT-Gateway
+            stats->serv_iot_gateway = true;
+            break;
+        default:
+        if (dst_port >= 8000 && dst_port <= 9000) {
+            stats->serv_common_iot = true;
+        } else if (dst_port >= 49152 && dst_port <= 65535) {
+            stats->serv_ephimeral = true;
+        } else {
+            stats->serv_other = true;
+        }
+        break;
+    }
+}
+
+
 
 uint32_t get_header_len(uint8_t* data, size_t len) {
     if(!data){
@@ -894,7 +983,6 @@ uint32_t get_tcp_window_size(u_char* data, size_t len) {
     
     // Extract the window size field and convert from network to host byte order
     uint16_t window_size = ntohs(tcp_header->th_win);
-    
     return window_size;
 }
 
@@ -905,13 +993,15 @@ flow_direction_t get_packet_direction(flow_stats_t* flow, flow_key_t* key){
     return FWD;
   }
 
-  printf("DEBUG [get_packet_direction] %u\n", flow->dst_ip_fwd);
-  printf("DEBUG [get_packet_direction] %u\n", key->dst_ip);
-  if(flow->dst_ip_fwd == key->dst_ip){
-    return FWD;
-  } else{
-    return BWD;
-  }
+  log_debug("Packet direction %u\n", key->dst_ip);
+  if(flow->key.src_ip == key->src_ip && 
+       flow->key.src_port == key->src_port &&
+       flow->key.dst_ip == key->dst_ip && 
+       flow->key.dst_port == key->dst_port) {
+        return FWD;
+    } else {
+        return BWD;
+    }
 }
 
 /* UPDATE MEAN AND STD USING WELLFORD'S ONLINE ALGORITHM */ 
