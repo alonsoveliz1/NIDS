@@ -128,6 +128,11 @@ int main(int argc, char* argv[]){
             result = start_analysis_mode();
             break;
     }
+
+    while(running){
+        sleep(1);
+    }
+    log_info("Shutdown signal received, stopping the program");
     
     if(result < 0){
         log_fatal("Application failed with code %d", result);
@@ -144,8 +149,8 @@ int main(int argc, char* argv[]){
 
 static int setup_logging(void) {
     // Set console logging level
-    log_set_level(LOG_DEBUG);
-    log_add_fp(stdout, LOG_INFO);
+    log_set_level(LOG_WARN);
+    //log_add_fp(stdout, LOG_INFO);
     
     // Try to add file logging
     FILE* logfile = fopen("/var/log/nids.log", "a");
@@ -164,7 +169,7 @@ static int setup_logging(void) {
 static int init_config_defaults(void) {
     config = malloc(sizeof(nids_config_t));
     if (config == NULL) {
-        return NIDS_ERR_MEMORY;
+        return NIDS_ERROR;
     }
     
     // Initialize with safe defaults
@@ -205,7 +210,7 @@ static int parse_arguments(int argc, char* argv[], char** config_path) {
             case 'i':
                 if (!optarg || strlen(optarg) == 0) {
                     log_error("Interface name cannot be empty");
-                    return NIDS_ERR_CONFIG;
+                    return NIDS_ERROR;
                 }
                 config->interface_name = optarg;
                 log_debug("Interface set to: %s", config->interface_name);
@@ -214,7 +219,7 @@ static int parse_arguments(int argc, char* argv[], char** config_path) {
             case 'c':
                 if (!optarg || strlen(optarg) == 0) {
                     log_error("Config path cannot be empty");
-                    return NIDS_ERR_CONFIG;
+                    return NIDS_ERROR;
                 }
                 *config_path = optarg;
                 log_debug("Config path set to: %s", *config_path);
@@ -223,7 +228,7 @@ static int parse_arguments(int argc, char* argv[], char** config_path) {
             case 'm':
                 if (!optarg || strlen(optarg) == 0) {
                     log_error("Model path cannot be empty");
-                    return NIDS_ERR_CONFIG;
+                    return NIDS_ERROR;
                 }
                 
                 // Free previous model path if it was dynamically allocated
@@ -234,7 +239,7 @@ static int parse_arguments(int argc, char* argv[], char** config_path) {
                 config->model_path = strdup(optarg);
                 if (!config->model_path) {
                     log_error("Failed to allocate memory for model path");
-                    return NIDS_ERR_MEMORY;
+                    return NIDS_ERROR;
                 }
                 config->model_path_dynamic = true;
                 log_debug("Model path set to: %s", config->model_path);
@@ -257,7 +262,7 @@ static int parse_arguments(int argc, char* argv[], char** config_path) {
                 
             case '?':
                 log_error("Unknown option or missing argument");
-                return NIDS_ERR_CONFIG;
+                return NIDS_ERROR;
                 
             default:
                 log_error("Unexpected getopt return value: %c", option);
@@ -273,13 +278,13 @@ static int parse_arguments(int argc, char* argv[], char** config_path) {
 int load_config(const char* config_path){
     if(!config_path){
         log_error("Config path is NULL");
-        return NIDS_ERR_CONFIG;
+        return NIDS_ERROR;
     }
 
     struct json_object* json_config = json_object_from_file(config_path);
     if (!json_config) {
         log_error("Failed to parse JSON configuration file: %s", json_util_get_last_err());
-        return NIDS_ERR_CONFIG;
+        return NIDS_ERROR;
     } 
     //json_object_object_get_ex(struct json_object *, const char *, struct json_object **)
     struct json_object* obj;
@@ -386,13 +391,7 @@ static int start_analysis_mode(void) {
     
     running = 1;
     log_info("Analysis mode running. Press Ctrl+C to stop.");
-    
-    // Main loop
-    while (running) {
-        sleep(1);
-    }
-    
-    log_info("Shutdown signal received, stopping analysis mode");
+
     return NIDS_OK;
 }
 
@@ -407,15 +406,11 @@ static void signal_handler(int sig){
 
 static void clean_all_processes(){
     printf("MAIN: clean_all_processes function\n");
-    bool success;
     
     stop_sniffer();
-    stop_flow_manager();
+    stop_flow_manager(); // & clean flow_table
     stop_model();
-     
-    if(!(success = cleanup_flow_table())){
-        fprintf(stderr, "Flow table not cleaned prorperly\n");
-    }
+  
     clean_packet_queue();
 
     if(config != NULL){
