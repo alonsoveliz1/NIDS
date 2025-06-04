@@ -1,6 +1,6 @@
-# Layton — A Lightweight ML-Based NIDS for Flow Classification
+# Layton — A Lightweight ML-Based NIDS for TCP/IP Flow Classification
 
-Today I present you Layton, my bachelor's thesis. It's a <span style="color:red"><strong>novel</strong></span>
+Today I present you Layton, my bachelor's thesis (in progress). It's a **novel**
  machine learning-powered **Network Intrusion Detection System (NIDS)** designed for real-time **flow-level TCP/IP traffic classification**.
 
 Written in C as a multithreaded application, Layton captures packets using libpcap, extracts flow features mimicking **CIC-FlowMeter**, and uses a trained **XGBoost model** (exported to ONNX) to classify flows as **benign or malicious** — all in one lightweight pipeline. (Model nor data included).
