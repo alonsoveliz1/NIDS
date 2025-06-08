@@ -3,7 +3,7 @@
 #define NIDS_VERSION "1.0.0"
 
 
-#define FEATURE_L1_COUNT 65
+#define FEATURE_L1_COUNT 68
 
 #include <stdio.h>
 #include <stdbool.h>
