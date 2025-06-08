@@ -126,7 +126,7 @@ target_include_directories (nids_unit_tests PRIVATE
 target_link_libraries (nids_unit_tests PRIVATE
     nids_core
     PkgConfig::CRITERION
-    onnxruntime::onnxruntime
+    onnxruntime::onnxruntime 
 )
 
 add_test (NAME unit_tests COMMAND nids_unit_tests)
