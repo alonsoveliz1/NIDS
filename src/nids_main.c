@@ -174,7 +174,7 @@ static int init_config_defaults(void) {
     
     // Initialize with safe defaults
     memset(config, 0, sizeof(nids_config_t));
-    config->interface_name = "eth0";
+    config->interface_name = "enp4s0";
     config->bufsize = 65535;
     config->flow_table_init_size = 10000;
     config->model_path = "../xgboost_model.onnx";
