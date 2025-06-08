@@ -9,7 +9,7 @@ xgboost_model.onnx
 cmake_install.cmake 
 Makefile
 compile_commands.json
-
+.clangd
 
 *.o 
 *.o.d
