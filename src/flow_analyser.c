@@ -23,6 +23,7 @@ static char **output_names = NULL;
 */
 static void check_status(OrtStatus *status);
 void extract_l1_features(flow_stats_t *flow, float *input_l1_values);
+void debug_model_info();
 
 static void check_status(OrtStatus *status){
     if(status != NULL){
@@ -165,6 +166,8 @@ int init_model() {
     
     model_running = true;
     log_info("Model initialization completed successfully!");
+
+	debug_model_info();
     return NIDS_OK;
 }
 
@@ -269,17 +272,11 @@ int test_classify_flow(float *input_values){
     struct timespec t2;
     clock_gettime(CLOCK_REALTIME, &t2);
 
-    uint64_t t1_ns = t1.tv_sec * 1000000000ULL + t1.tv_nsec;
-    uint64_t t2_ns = t2.tv_sec * 1000000000ULL + t2.tv_nsec;
-    uint64_t time_ns = t2_ns - t1_ns;
-    printf("Prediction time: %.1f μs (%.3f ms)\n", time_ns / 1000.0, time_ns / 1000000.0);
-
-    if (output_values[0] > output_values[1]) {
-        printf("PREDICTION 0\n");
-        prediction = 0; // Normal traffic
-    } else {
+	float attack_probability = output_values[1];
+	if (attack_probability > 0.69) { //Threshold of 0.69 
         prediction = 1; // Attack traffic
-        printf("PREDICTION 1\n");
+    } else {
+        prediction = 0; // Normal traffic
     }
 
     if (memory_info) ort_api->ReleaseMemoryInfo(memory_info);
@@ -320,6 +317,7 @@ bool stop_model(){
     model_running = false;
     return true; 
 }
+
 
 
 void extract_l1_features(flow_stats_t *flow, float *input_l1_values){
@@ -395,3 +393,133 @@ void extract_l1_features(flow_stats_t *flow, float *input_l1_values){
 
 
 
+void debug_model_info() {
+    if (!session) {
+        printf("Session not initialized\n");
+        return;
+    }
+    
+    OrtStatus *status = NULL;
+    
+    printf("\n=== MODEL FEATURE INFORMATION ===\n");
+    printf("Input count: %zu\n", input_count);
+    printf("Output count: %zu\n", output_count);
+    
+    // Get input tensor info
+    for (size_t i = 0; i < input_count; i++) {
+        printf("\n--- Input %zu ---\n", i);
+        printf("Name: %s\n", input_names[i]);
+        
+        // Get input type info
+        OrtTypeInfo* input_type_info;
+        status = ort_api->SessionGetInputTypeInfo(session, i, &input_type_info);
+        if (status == NULL) {
+            const OrtTensorTypeAndShapeInfo* tensor_info;
+            status = ort_api->CastTypeInfoToTensorInfo(input_type_info, &tensor_info);
+            
+            if (status == NULL) {
+                // Get dimensions
+                size_t dim_count;
+                status = ort_api->GetDimensionsCount(tensor_info, &dim_count);
+                if (status == NULL) {
+                    int64_t dims[10]; // Assume max 10 dimensions
+                    status = ort_api->GetDimensions(tensor_info, dims, dim_count);
+                    if (status == NULL) {
+                        printf("Shape: [");
+                        for (size_t j = 0; j < dim_count; j++) {
+                            printf("%ld", dims[j]);
+                            if (j < dim_count - 1) printf(", ");
+                        }
+                        printf("]\n");
+                        
+                        if (dim_count == 2) {
+                            printf("Expected batch size: %ld\n", dims[0]);
+                            printf("Expected feature count: %ld\n", dims[1]);
+                            printf("Your FEATURE_L1_COUNT: %d\n", FEATURE_L1_COUNT);
+                            
+                            if (dims[1] != FEATURE_L1_COUNT) {
+                                printf("MISMATCH: Model expects %ld features but you're providing %d!\n", 
+                                       dims[1], FEATURE_L1_COUNT);
+                            } else {
+                                printf("Feature count matches!\n");
+                            }
+                        }
+                    }
+                }
+                
+                // Get data type
+                ONNXTensorElementDataType type;
+                status = ort_api->GetTensorElementType(tensor_info, &type);
+                if (status == NULL) {
+                    printf("Data type: ");
+                    switch(type) {
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:
+                            printf("FLOAT32\n");
+                            break;
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:
+                            printf("FLOAT64\n");
+                            break;
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:
+                            printf("INT32\n");
+                            break;
+                        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:
+                            printf("INT64\n");
+                            break;
+                        default:
+                            printf("OTHER (%d)\n", type);
+                    }
+                }
+            }
+            
+            ort_api->ReleaseTypeInfo(input_type_info);
+        }
+        
+        if (status != NULL) {
+            const char* msg = ort_api->GetErrorMessage(status);
+            printf("Error getting input info: %s\n", msg);
+            ort_api->ReleaseStatus(status);
+            status = NULL;
+        }
+    }
+    
+    // Get output info
+    for (size_t i = 0; i < output_count; i++) {
+        printf("\n--- Output %zu ---\n", i);
+        printf("Name: %s\n", output_names[i]);
+        
+        OrtTypeInfo* output_type_info;
+        status = ort_api->SessionGetOutputTypeInfo(session, i, &output_type_info);
+        if (status == NULL) {
+            const OrtTensorTypeAndShapeInfo* tensor_info;
+            status = ort_api->CastTypeInfoToTensorInfo(output_type_info, &tensor_info);
+            
+            if (status == NULL) {
+                size_t dim_count;
+                status = ort_api->GetDimensionsCount(tensor_info, &dim_count);
+                if (status == NULL) {
+                    int64_t dims[10];
+                    status = ort_api->GetDimensions(tensor_info, dims, dim_count);
+                    if (status == NULL) {
+                        printf("Shape: [");
+                        for (size_t j = 0; j < dim_count; j++) {
+                            printf("%ld", dims[j]);
+                            if (j < dim_count - 1) printf(", ");
+                        }
+                        printf("]\n");
+                    }
+                }
+            }
+            
+            ort_api->ReleaseTypeInfo(output_type_info);
+        }
+        
+        if (status != NULL) {
+            const char* msg = ort_api->GetErrorMessage(status);
+            printf("Error getting output info: %s\n", msg);
+            ort_api->ReleaseStatus(status);
+            status = NULL;
+        }
+    }
+    
+    printf("=================================\n");
+}
